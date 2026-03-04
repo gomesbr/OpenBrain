@@ -2,6 +2,7 @@
 import { extname } from "node:path";
 import AdmZip from "adm-zip";
 import type { NormalizedMessage, ParseResult } from "../types.js";
+import { normalizeTimestamp } from "../time.js";
 
 function isPresent<T>(value: T | null | undefined): value is T {
   return value !== null && value !== undefined;
@@ -137,14 +138,8 @@ function extractScalarString(value: unknown): string | null {
 }
 
 function toIso(value: unknown): string | null {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const ms = value > 1_000_000_000_000 ? value : value * 1000;
-    return new Date(ms).toISOString();
-  }
-  if (typeof value === "string" && value.trim()) {
-    const ms = Date.parse(value);
-    if (Number.isFinite(ms)) return new Date(ms).toISOString();
-  }
+  const normalized = normalizeTimestamp(value);
+  if (normalized) return normalized;
   if (value && typeof value === "object") {
     const obj = value as Record<string, unknown>;
     const embeddedDate = obj.$date;

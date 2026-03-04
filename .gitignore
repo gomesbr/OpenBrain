@@ -3,3 +3,4 @@ dist/
 .env
 backups/
 *.log
+.reembed_checkpoint.json

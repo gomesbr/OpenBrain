@@ -313,11 +313,13 @@ async function main(): Promise<void> {
       const start = String(req.query.start ?? "").trim() || undefined;
       const end = String(req.query.end ?? "").trim() || undefined;
       const domain = String(req.query.domain ?? "").trim() || undefined;
+      const timeframe = String(req.query.timeframe ?? "").trim() || undefined;
       const items = await getPrivacyAwareTimeline({
         chatNamespace,
         start,
         end,
         domain,
+        timeframe,
         privacyMode: session.privacyMode
       });
       res.json({ ok: true, items });

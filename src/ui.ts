@@ -149,15 +149,40 @@ export function renderAppHtml(): string {
     }
     .metric b { font-size: 24px; display: block; margin-top: 4px; }
     .chart {
-      min-height: 280px;
+      min-height: 320px;
       width: 100%;
     }
     .graph {
-      min-height: 380px;
+      min-height: 580px;
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 10px;
       background: #081627;
+    }
+    .people-panel {
+      min-height: calc(100vh - 220px);
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+    .timeline-item {
+      padding: 10px 0;
+      border-bottom: 1px solid #1f3b60;
+    }
+    .timeline-domain {
+      font-weight: 700;
+      text-transform: capitalize;
+      margin-right: 6px;
+    }
+    .timeline-chip {
+      display: inline-block;
+      margin-right: 6px;
+      padding: 2px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      font-size: 12px;
+      color: #9fc3e8;
+      text-transform: capitalize;
+      background: rgba(15, 46, 79, 0.55);
     }
     .hidden { display: none !important; }
     .badge {
@@ -253,7 +278,7 @@ export function renderAppHtml(): string {
           </section>
 
           <section id="module-people" class="hidden">
-            <div class="panel">
+            <div class="panel people-panel">
               <h3>Relationship Network</h3>
               <div id="peopleGraph" class="graph"></div>
             </div>
@@ -347,6 +372,24 @@ export function renderAppHtml(): string {
         modeBadge.className = "badge mode-" + state.privacyMode;
       }
 
+      function pickChart(payload, id) {
+        const charts = Array.isArray(payload?.charts) ? payload.charts : [];
+        return charts.find((c) => c.id === id) || charts[0] || null;
+      }
+
+      function fmtDate(iso) {
+        if (!iso) return "n/a";
+        const dt = new Date(iso);
+        if (Number.isNaN(dt.getTime())) return iso;
+        return dt.toLocaleString();
+      }
+
+      function resizeVisuals() {
+        try { if (state.briefChart) state.briefChart.resize(); } catch {}
+        try { if (state.behaviorChart) state.behaviorChart.resize(); } catch {}
+        try { if (state.graph) { state.graph.resize(); state.graph.fit(undefined, 26); } } catch {}
+      }
+
       function showApp() {
         loginPage.style.display = "none";
         appPage.style.display = "block";
@@ -372,7 +415,7 @@ export function renderAppHtml(): string {
         metrics.innerHTML = domains.map((d) => \`<div class="metric"><span class="muted">\${d.domain}</span><b>\${Math.round(d.total || 0)}</b></div>\`).join("");
 
         const chartPayload = await api("/v1/brain/insights?chatNamespace=" + encodeURIComponent(state.chatNamespace) + "&timeframe=" + state.timeframe);
-        const chartData = chartPayload.charts && chartPayload.charts[0];
+        const chartData = pickChart(chartPayload, "brief-domain-weekly");
         const chartEl = byId("briefChart");
         if (!state.briefChart) state.briefChart = echarts.init(chartEl);
         if (chartData) {
@@ -381,11 +424,13 @@ export function renderAppHtml(): string {
             legend: { textStyle: { color: "#c7d7ec" } },
             xAxis: { type: "category", data: chartData.labels, axisLabel: { color: "#9eb3cb" } },
             yAxis: { type: "value", axisLabel: { color: "#9eb3cb" } },
-            series: chartData.series.map((s) => ({ name: s.name, type: "line", smooth: true, data: s.data }))
+            grid: { left: 42, right: 20, top: 42, bottom: 36 },
+            series: chartData.series.map((s) => ({ name: s.name, type: "bar", barMaxWidth: 22, data: s.data }))
           });
         } else {
           state.briefChart.clear();
         }
+        resizeVisuals();
       }
 
       async function loadPeopleGraph() {
@@ -399,16 +444,30 @@ export function renderAppHtml(): string {
             ...payload.graph.edges.map((e) => ({ data: { id: e.id, source: e.source, target: e.target, weight: e.weight } }))
           ],
           style: [
-            { selector: "node", style: { "background-color": "#46c0ff", label: "data(label)", color: "#dce9f8", "font-size": 10 } },
-            { selector: "edge", style: { "line-color": "#2f5a84", width: "mapData(weight, 1, 30, 1, 8)" } }
+            {
+              selector: "node",
+              style: {
+                "background-color": "#46c0ff",
+                label: "data(label)",
+                color: "#dce9f8",
+                "font-size": 11,
+                "text-wrap": "wrap",
+                "text-max-width": 88,
+                "text-outline-color": "#081627",
+                "text-outline-width": 2
+              }
+            },
+            { selector: "edge", style: { "line-color": "#2f5a84", width: "mapData(weight, 1, 30, 1, 9)", opacity: 0.72 } }
           ],
-          layout: { name: "cose", animate: false }
+          layout: { name: "cose", animate: false, nodeRepulsion: 11000, idealEdgeLength: 120, gravity: 0.8 }
         });
+        state.graph.fit(undefined, 30);
+        resizeVisuals();
       }
 
       async function loadBehaviorChart() {
         const payload = await api("/v1/brain/insights?chatNamespace=" + encodeURIComponent(state.chatNamespace) + "&timeframe=" + state.timeframe);
-        const chart = payload.charts && payload.charts[0];
+        const chart = pickChart(payload, "behavior-trends");
         if (!state.behaviorChart) state.behaviorChart = echarts.init(byId("behaviorChart"));
         if (!chart) {
           state.behaviorChart.clear();
@@ -416,24 +475,29 @@ export function renderAppHtml(): string {
         }
         state.behaviorChart.setOption({
           tooltip: { trigger: "axis" },
-          legend: { textStyle: { color: "#c7d7ec" } },
+          legend: { textStyle: { color: "#c7d7ec" }, top: 4 },
           xAxis: { type: "category", data: chart.labels, axisLabel: { color: "#9eb3cb" } },
-          yAxis: { type: "value", axisLabel: { color: "#9eb3cb" } },
-          series: chart.series.map((s) => ({ name: s.name, type: "line", areaStyle: {}, data: s.data }))
+          yAxis: { type: "value", axisLabel: { color: "#9eb3cb" }, name: "messages/day", nameTextStyle: { color: "#9eb3cb" } },
+          grid: { left: 52, right: 20, top: 48, bottom: 36 },
+          series: chart.series.map((s) => ({ name: s.name, type: "line", smooth: true, symbol: "none", data: s.data }))
         });
+        resizeVisuals();
       }
 
       async function loadTimeline() {
-        const payload = await api("/v1/brain/timeline?chatNamespace=" + encodeURIComponent(state.chatNamespace));
+        const payload = await api("/v1/brain/timeline?chatNamespace=" + encodeURIComponent(state.chatNamespace) + "&timeframe=" + encodeURIComponent(state.timeframe));
         const list = byId("timelineList");
         const rows = Array.isArray(payload.items) ? payload.items : [];
         if (rows.length === 0) {
           list.textContent = "No timeline items yet.";
           return;
         }
-        list.innerHTML = rows.slice(0, 80).map((item) =>
-          \`<div style="padding:8px 0;border-bottom:1px solid #1f3b60;"><b>\${item.domain}</b> - <span class="muted">\${item.sourceTimestamp || "n/a"}</span><div>\${item.text}</div></div>\`
-        ).join("");
+        list.innerHTML = rows.slice(0, 80).map((item) => {
+          const chips = Array.isArray(item.domains) && item.domains.length > 0
+            ? item.domains.map((d) => \`<span class="timeline-chip">\${d}</span>\`).join("")
+            : \`<span class="timeline-chip">\${item.domain}</span>\`;
+          return \`<div class="timeline-item"><div>\${chips}<span class="muted">\${fmtDate(item.sourceTimestamp)}</span></div><div>\${item.text}</div></div>\`;
+        }).join("");
       }
 
       async function loadInsights() {
@@ -521,6 +585,14 @@ export function renderAppHtml(): string {
         await ask(question);
       });
 
+      byId("globalQuestion").addEventListener("keydown", async (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        const question = byId("globalQuestion").value.trim();
+        if (!question) return;
+        await ask(question);
+      });
+
       privacySelect.addEventListener("change", async () => {
         const mode = privacySelect.value;
         await api("/v1/privacy/mode", { method: "POST", body: JSON.stringify({ mode }) });
@@ -571,6 +643,8 @@ export function renderAppHtml(): string {
         });
         await loadOps();
       });
+
+      window.addEventListener("resize", () => resizeVisuals());
     })();
   </script>
 </body>
