@@ -1,0 +1,50 @@
+﻿services:
+  openbrain-db:
+    image: pgvector/pgvector:pg16
+    container_name: openbrain-db
+    restart: unless-stopped
+    ports:
+      - "54329:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-openbrain}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openbrain_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-openbrain}
+    volumes:
+      - openbrain_pgdata:/var/lib/postgresql/data
+      - ./sql/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+
+  openbrain-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: openbrain-api
+    restart: unless-stopped
+    depends_on:
+      - openbrain-db
+    ports:
+      - "4301:4301"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 4301
+      POSTGRES_HOST: openbrain-db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-openbrain}
+      POSTGRES_USER: ${POSTGRES_USER:-openbrain}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openbrain_dev_password}
+      OPENBRAIN_API_KEY: ${OPENBRAIN_API_KEY:-replace_me}
+      OPENBRAIN_ALLOWED_ORIGINS: ${OPENBRAIN_ALLOWED_ORIGINS:-http://127.0.0.1:3210,http://localhost:3210}
+      OPENBRAIN_EMBEDDING_MODE: ${OPENBRAIN_EMBEDDING_MODE:-mock}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENBRAIN_EMBEDDING_MODEL: ${OPENBRAIN_EMBEDDING_MODEL:-openai/text-embedding-3-small}
+      OPENBRAIN_METADATA_MODEL: ${OPENBRAIN_METADATA_MODEL:-openai/gpt-4o-mini}
+      OPENBRAIN_REQUEST_TIMEOUT_MS: ${OPENBRAIN_REQUEST_TIMEOUT_MS:-15000}
+      OPENBRAIN_RATE_LIMIT_PER_MIN: ${OPENBRAIN_RATE_LIMIT_PER_MIN:-240}
+      OPENBRAIN_APP_USER: ${OPENBRAIN_APP_USER:-owner}
+      OPENBRAIN_APP_PASSWORD: ${OPENBRAIN_APP_PASSWORD:-change_me}
+      OPENBRAIN_APP_SESSION_TTL_SEC: ${OPENBRAIN_APP_SESSION_TTL_SEC:-1800}
+      OPENBRAIN_OWNER_NAME: ${OPENBRAIN_OWNER_NAME:-Fabio}
+      OPENBRAIN_PSEUDONYM_SEED: ${OPENBRAIN_PSEUDONYM_SEED:-openbrain_seed}
+
+volumes:
+  openbrain_pgdata:
+    name: openbrain_pgdata
