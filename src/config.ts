@@ -33,15 +33,21 @@ export const config = {
   apiKey: readEnv("OPENBRAIN_API_KEY", ""),
   allowedOrigins: readList("OPENBRAIN_ALLOWED_ORIGINS"),
   embeddingMode: readEnv("OPENBRAIN_EMBEDDING_MODE", "mock"),
+  embeddingFallbackMode: readEnv("OPENBRAIN_EMBEDDING_FALLBACK_MODE", "mock"),
+  openAiApiKey: readEnv("OPENAI_API_KEY", ""),
+  openAiBaseUrl: readEnv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
   openRouterApiKey: readEnv("OPENROUTER_API_KEY", ""),
   embeddingModel: readEnv("OPENBRAIN_EMBEDDING_MODEL", "openai/text-embedding-3-small"),
+  metadataProvider: readEnv("OPENBRAIN_METADATA_PROVIDER", "auto"),
   metadataModel: readEnv("OPENBRAIN_METADATA_MODEL", "openai/gpt-4o-mini"),
+  metadataMaxTokens: readNumber("OPENBRAIN_METADATA_MAX_TOKENS", 384),
   requestTimeoutMs: readNumber("OPENBRAIN_REQUEST_TIMEOUT_MS", 15000),
   rateLimitPerMinute: readNumber("OPENBRAIN_RATE_LIMIT_PER_MIN", 240),
   appUser: readEnv("OPENBRAIN_APP_USER", "owner"),
   appPassword: readEnv("OPENBRAIN_APP_PASSWORD", "change_me"),
   appSessionTtlSec: readNumber("OPENBRAIN_APP_SESSION_TTL_SEC", 1800),
   ownerName: readEnv("OPENBRAIN_OWNER_NAME", "Fabio"),
+  ownerAliases: readList("OPENBRAIN_OWNER_ALIASES"),
   pseudonymSeed: readEnv("OPENBRAIN_PSEUDONYM_SEED", "openbrain-demo-seed")
 } as const;
 

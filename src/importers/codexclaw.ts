@@ -1,6 +1,7 @@
 ﻿import Database from "better-sqlite3";
 import { resolve } from "node:path";
 import type { NormalizedMessage, ParseResult } from "../types.js";
+import { normalizeTimestamp } from "../time.js";
 
 interface ImportOptions {
   dbPath: string;
@@ -8,14 +9,7 @@ interface ImportOptions {
 }
 
 function toIso(value: unknown): string | null {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return new Date(value).toISOString();
-  }
-  if (typeof value === "string" && value.trim()) {
-    const ms = Date.parse(value);
-    if (Number.isFinite(ms)) return new Date(ms).toISOString();
-  }
-  return null;
+  return normalizeTimestamp(value);
 }
 
 function chatNamespace(prefix: string, chatId: string): string {

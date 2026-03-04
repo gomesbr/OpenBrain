@@ -39,6 +39,7 @@ interface MemoryRow {
   content: string;
   role: string;
   source_system: string;
+  source_conversation_id: string | null;
   source_timestamp: string | null;
   chat_namespace: string | null;
   metadata: Record<string, unknown> | null;
@@ -88,11 +89,212 @@ function normalizeName(value: string): string {
     .replace(/\s+/g, " ");
 }
 
+const OWNER_NAME_NORMALIZED = normalizeName(config.ownerName);
+const OWNER_ALIASES = new Set(
+  [config.ownerName, ...config.ownerAliases]
+    .map((item) => normalizeName(item))
+    .filter((item) => item.length > 0)
+);
+OWNER_ALIASES.add(OWNER_NAME_NORMALIZED);
+
+function isOwnerAlias(name: string): boolean {
+  const normalized = normalizeName(name);
+  if (!normalized) return false;
+  if (OWNER_ALIASES.has(normalized)) return true;
+  if (OWNER_NAME_NORMALIZED && OWNER_NAME_NORMALIZED.split(" ").length === 1) {
+    return normalized.startsWith(`${OWNER_NAME_NORMALIZED} `);
+  }
+  return false;
+}
+
+function parseWhatsappConversationLabel(sourceConversationId: string | null | undefined): string | null {
+  if (!sourceConversationId) return null;
+  const patterns = [
+    /whatsapp chat - (.+?)(?:\.zip)?___chat$/i,
+    /whatsapp chat with (.+?)(?:\.zip)?___chat$/i,
+    /whatsapp chat - (.+)$/i
+  ];
+  for (const pattern of patterns) {
+    const match = sourceConversationId.match(pattern);
+    if (match?.[1]) {
+      return match[1].replace(/_/g, " ").trim();
+    }
+  }
+  return sourceConversationId;
+}
+
+function isLikelyGroupLabel(label: string): boolean {
+  const text = label.toLowerCase();
+  return /\b(group|team|squad|community|fam|gang|crew|dojo|circle|pr)\b/.test(text);
+}
+
+const DOMAIN_SET: Domain[] = [
+  "identity",
+  "relationships",
+  "behavior",
+  "health",
+  "diet",
+  "work",
+  "finance",
+  "mood",
+  "other"
+];
+
+interface DomainCandidate {
+  domain: Domain;
+  score: number;
+  reasons: string[];
+}
+
+function inferDomainFromText(text: string): Domain {
+  if (/(money|finance|invest|expense|income|budget|loan|mortgage|salary|payment|bank|credit|rent|tax)/.test(text)) return "finance";
+  if (/(diet|food|eat|calorie|protein|carb|meal|nutrition|fasting|dinner|lunch|breakfast)/.test(text)) return "diet";
+  if (/(doctor|medicine|symptom|blood|health|clinic|hospital|pain|injury|therapy|diagnosis)/.test(text)) return "health";
+  if (/(sleep|mood|stress|anx|happy|sad|mental|emotion|overwhelm|burnout)/.test(text)) return "mood";
+  if (/(habit|routine|discipline|consisten|streak|practice|tracking|chore|clean|fix|repair|maintenance)/.test(text)) return "behavior";
+  if (/(project|client|deadline|meeting|career|office|invoice|contract|repo|pull request|deployment|ticket|sprint)/.test(text)) return "work";
+  if (/(identity|personality|belief|value|purpose|self-image|who am i|self)/.test(text)) return "identity";
+  if (/(wife|husband|friend|family|brother|sister|mom|dad|partner|kids|daughter|son|girlfriend|boyfriend)/.test(text)) return "relationships";
+  return "other";
+}
+
+function addDomainScore(
+  scores: Map<Domain, number>,
+  reasons: Map<Domain, string[]>,
+  domain: Domain,
+  amount: number,
+  reason: string
+): void {
+  const current = scores.get(domain) ?? 0;
+  scores.set(domain, current + amount);
+  const list = reasons.get(domain) ?? [];
+  if (!list.includes(reason)) list.push(reason);
+  reasons.set(domain, list);
+}
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter(Boolean);
+}
+
+function inferDomainCandidates(
+  content: string,
+  metadata: Record<string, unknown>,
+  sourceSystem: string,
+  sourceConversationId: string | null,
+  detectedPeople: string[]
+): DomainCandidate[] {
+  const text = `${content}\n${JSON.stringify(metadata)}`.toLowerCase();
+  const scores = new Map<Domain, number>();
+  const reasons = new Map<Domain, string[]>();
+
+  for (const domain of DOMAIN_SET) {
+    scores.set(domain, 0);
+    reasons.set(domain, []);
+  }
+
+  const add = (domain: Domain, amount: number, reason: string): void => {
+    addDomainScore(scores, reasons, domain, amount, reason);
+  };
+
+  if (/(wife|husband|partner|family|friend|mom|dad|brother|sister|daughter|son)/.test(text)) {
+    add("relationships", 0.85, "relationship_terms");
+  }
+  if (/(money|budget|invest|loan|salary|cash|income|expense|net worth|bank|credit)/.test(text)) {
+    add("finance", 0.9, "finance_terms");
+  }
+  if (/(diet|meal|food|protein|calorie|nutrition|breakfast|lunch|dinner)/.test(text)) {
+    add("diet", 0.85, "diet_terms");
+  }
+  if (/(doctor|medicine|health|symptom|hospital|clinic|pain|injury|therapy)/.test(text)) {
+    add("health", 0.9, "health_terms");
+  }
+  if (/(mood|stress|anx|anxiety|happy|sad|mental|emotion|burnout|overwhelmed)/.test(text)) {
+    add("mood", 0.8, "mood_terms");
+  }
+  if (/(habit|routine|discipline|streak|consisten|practice|tracking)/.test(text)) {
+    add("behavior", 0.75, "habit_terms");
+  }
+
+  const professionalHit = /(client|deadline|meeting|repo|pull request|deployment|ticket|sprint|contract|office|invoice|career)/.test(text);
+  const genericWorkVerb = /\bwork(ing|ed|s)?\b/.test(text);
+  if (professionalHit) {
+    add("work", 1.0, "professional_terms");
+  } else if (genericWorkVerb) {
+    add("work", 0.2, "generic_work_verb");
+  }
+
+  if (/(identity|personality|belief|values|purpose|who am i|self-image)/.test(text)) {
+    add("identity", 0.75, "identity_terms");
+  }
+
+  if (/(house|home|kitchen|bathroom|garage|pipe|plumbing|laundry|clean|fix|repair|maintenance|yard|grocery|weather)/.test(text)) {
+    add("behavior", 0.55, "home_chore_context");
+    add("relationships", 0.25, "household_context");
+  }
+
+  if (detectedPeople.length > 0) {
+    add("relationships", Math.min(0.6, 0.18 + detectedPeople.length * 0.08), "people_mentions");
+  }
+
+  if (sourceSystem === "whatsapp") {
+    const label = parseWhatsappConversationLabel(sourceConversationId);
+    if (label && !isLikelyGroupLabel(label)) {
+      add("relationships", 0.9, "direct_chat_context");
+    } else if (label && isLikelyGroupLabel(label)) {
+      add("relationships", 0.35, "group_chat_context");
+    }
+  }
+
+  const topics = toStringArray(metadata.topics);
+  for (const topic of topics) {
+    const topicDomain = inferDomainFromText(topic.toLowerCase());
+    if (topicDomain !== "other") {
+      add(topicDomain, 0.25, "metadata_topics");
+    }
+  }
+
+  const metadataType = typeof metadata.type === "string" ? metadata.type.toLowerCase() : "";
+  if (metadataType === "task") {
+    add("behavior", 0.35, "metadata_task_type");
+  }
+  if (metadataType === "person_note") {
+    add("relationships", 0.35, "metadata_person_note_type");
+  }
+
+  const ranked = DOMAIN_SET
+    .map((domain) => ({
+      domain,
+      score: Number((scores.get(domain) ?? 0).toFixed(3)),
+      reasons: reasons.get(domain) ?? []
+    }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  if (ranked.length === 0) {
+    return [{ domain: "other", score: 0.2, reasons: ["fallback_other"] }];
+  }
+
+  const top = ranked[0]?.score ?? 0;
+  const cutoff = Math.max(0.3, top * 0.42);
+  const shortlisted = ranked.filter((item) => item.score >= cutoff).slice(0, 3);
+  if (shortlisted.length === 0) {
+    return [ranked[0]];
+  }
+  return shortlisted;
+}
+
 function parseDateOrNow(value: string | null): Date {
   if (!value) return new Date();
   const ms = Date.parse(value);
   if (!Number.isFinite(ms)) return new Date();
-  return new Date(ms);
+  const parsed = new Date(ms);
+  const now = new Date();
+  const maxFuture = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+  if (parsed > maxFuture) {
+    return now;
+  }
+  return parsed;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -100,20 +302,7 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function inferDomain(content: string, metadata: Record<string, unknown>): Domain {
-  const text = `${content}\n${JSON.stringify(metadata)}`.toLowerCase();
-  if (/wife|husband|friend|family|brother|sister|mom|dad|john|chat/.test(text)) return "relationships";
-  if (/diet|food|eat|calorie|protein|carb|meal/.test(text)) return "diet";
-  if (/sleep|mood|stress|anx|happy|sad|mental/.test(text)) return "mood";
-  if (/work|job|project|client|deadline|meeting|career/.test(text)) return "work";
-  if (/habit|routine|discipline|consisten|streak/.test(text)) return "behavior";
-  if (/doctor|medicine|symptom|blood|health|clinic/.test(text)) return "health";
-  if (/money|finance|invest|expense|income|budget/.test(text)) return "finance";
-  if (/identity|personality|belief|value/.test(text)) return "identity";
-  return "other";
-}
-
-function detectPeople(content: string, metadata: Record<string, unknown>): string[] {
+function detectPeople(content: string, metadata: Record<string, unknown>, sourceConversationId: string | null): string[] {
   const names = new Set<string>();
 
   const speaker = metadata.speaker;
@@ -128,6 +317,11 @@ function detectPeople(content: string, metadata: Record<string, unknown>): strin
     }
   }
 
+  const conversationLabel = parseWhatsappConversationLabel(sourceConversationId);
+  if (conversationLabel && !isLikelyGroupLabel(conversationLabel)) {
+    names.add(conversationLabel);
+  }
+
   const matches = content.match(NAME_RE) ?? [];
   for (const match of matches) {
     if (STOP_NAMES.has(match)) continue;
@@ -135,6 +329,75 @@ function detectPeople(content: string, metadata: Record<string, unknown>): strin
   }
 
   return Array.from(names).slice(0, 12);
+}
+
+interface WeightedPerson {
+  displayName: string;
+  weight: number;
+}
+
+function canonicalPersonKey(displayName: string): string {
+  const normalized = normalizeName(displayName);
+  if (!normalized) return normalized;
+  if (isOwnerAlias(displayName)) return OWNER_NAME_NORMALIZED;
+  return normalized;
+}
+
+function mergePeopleRows(rows: Array<{ display_name: string; weight: number }>): WeightedPerson[] {
+  const merged = new Map<string, WeightedPerson>();
+  for (const row of rows) {
+    const key = canonicalPersonKey(row.display_name);
+    if (!key) continue;
+    const existing = merged.get(key);
+    if (existing) {
+      existing.weight += Number(row.weight ?? 0);
+      if (existing.displayName.length < row.display_name.length && !isOwnerAlias(existing.displayName)) {
+        existing.displayName = row.display_name;
+      }
+      continue;
+    }
+    merged.set(key, {
+      displayName: isOwnerAlias(row.display_name) ? config.ownerName : row.display_name,
+      weight: Number(row.weight ?? 0)
+    });
+  }
+  return Array.from(merged.values()).sort((a, b) => b.weight - a.weight);
+}
+
+function domainLabel(domain: string): string {
+  switch (domain) {
+    case "relationships":
+      return "social";
+    case "behavior":
+      return "habits";
+    case "diet":
+      return "nutrition";
+    default:
+      return domain;
+  }
+}
+
+function reclassifyTimelineDomain(storedDomain: string, text: string, metadata: Record<string, unknown>): string {
+  const candidatesRaw = metadata.domainCandidates;
+  if (Array.isArray(candidatesRaw) && candidatesRaw.length > 0) {
+    const first = candidatesRaw[0];
+    if (first && typeof first === "object" && typeof (first as { domain?: unknown }).domain === "string") {
+      return String((first as { domain: string }).domain);
+    }
+  }
+  if (storedDomain !== "work") return storedDomain;
+  const inferred = inferDomainFromText(text.toLowerCase());
+  if (inferred === "relationships" || inferred === "other") {
+    const sourceConversationId = typeof metadata.sourceConversationId === "string"
+      ? metadata.sourceConversationId
+      : null;
+    const label = parseWhatsappConversationLabel(sourceConversationId);
+    if (label && !isLikelyGroupLabel(label)) {
+      return "relationships";
+    }
+    return inferred;
+  }
+  return storedDomain;
 }
 
 async function getOrCreateEntity(
@@ -211,8 +474,10 @@ async function upsertRollup(
 async function storeFactAndEvidence(
   row: MemoryRow,
   domain: Domain,
+  domainCandidates: DomainCandidate[],
   confidence: number,
   subjectEntityId: string | null,
+  effectiveTimestampIso: string,
   valueText: string
 ): Promise<void> {
   const fact = await pool.query<{ id: string }>(
@@ -228,9 +493,15 @@ async function storeFactAndEvidence(
       subjectEntityId,
       valueText,
       confidence,
-      row.source_timestamp,
+      effectiveTimestampIso,
       row.content,
-      JSON.stringify({ sourceSystem: row.source_system, role: row.role })
+      JSON.stringify({
+        sourceSystem: row.source_system,
+        sourceConversationId: row.source_conversation_id,
+        role: row.role,
+        domainCandidates,
+        conversationLabel: parseWhatsappConversationLabel(row.source_conversation_id)
+      })
     ]
   );
 
@@ -250,12 +521,14 @@ async function refreshSocialInsights(chatNamespace: string): Promise<void> {
        FROM brain_entities
       WHERE chat_namespace = $1
         AND entity_type = 'person'
+        AND COALESCE((metadata->>'owner')::boolean, false) = false
       ORDER BY weight DESC
-      LIMIT 6`,
+      LIMIT 32`,
     [chatNamespace]
   );
 
-  const peopleText = topPeople.rows.map((r) => `${r.display_name} (${Math.round(r.weight)})`).join(", ");
+  const merged = mergePeopleRows(topPeople.rows).slice(0, 6);
+  const peopleText = merged.map((r) => `${r.displayName} (${Math.round(r.weight)})`).join(", ");
   const summary = peopleText
     ? `Most referenced people: ${peopleText}.`
     : "Not enough relationship evidence yet.";
@@ -275,16 +548,16 @@ async function refreshSocialInsights(chatNamespace: string): Promise<void> {
     [
       chatNamespace,
       summary,
-      topPeople.rows.length >= 3 ? 0.78 : 0.52,
+      merged.length >= 3 ? 0.78 : 0.52,
       "Check reciprocity with top contacts and schedule intentional catch-ups.",
-      JSON.stringify({ people: topPeople.rows })
+      JSON.stringify({ people: merged })
     ]
   );
 }
 
 async function processMemoryItem(memoryItemId: string): Promise<void> {
   const data = await pool.query<MemoryRow>(
-    `SELECT id, content, role, source_system, source_timestamp, chat_namespace, metadata, created_at
+    `SELECT id, content, role, source_system, source_conversation_id, source_timestamp, chat_namespace, metadata, created_at
        FROM memory_items
       WHERE id = $1
       LIMIT 1`,
@@ -294,24 +567,36 @@ async function processMemoryItem(memoryItemId: string): Promise<void> {
   if (!row || !row.chat_namespace) return;
 
   const metadata = asRecord(row.metadata);
-  const domain = inferDomain(row.content, metadata);
+  const people = detectPeople(row.content, metadata, row.source_conversation_id).filter((name) => !isOwnerAlias(name));
+  const domainCandidates = inferDomainCandidates(row.content, metadata, row.source_system, row.source_conversation_id, people);
+  const primaryDomain = domainCandidates[0]?.domain ?? "other";
   const seenAt = parseDateOrNow(row.source_timestamp ?? row.created_at);
   const day = seenAt.toISOString().slice(0, 10);
   const ownerEntityId = await getOrCreateEntity(row.chat_namespace, "person", config.ownerName, {
     owner: true
   });
 
-  const people = detectPeople(row.content, metadata).filter((name) => normalizeName(name) !== normalizeName(config.ownerName));
   for (const personName of people) {
     const personEntityId = await getOrCreateEntity(row.chat_namespace, "person", personName, { detectedFrom: "content" });
     await upsertRelationship(row.chat_namespace, ownerEntityId, personEntityId, "interaction", seenAt);
   }
 
   const confidence = Math.min(0.95, 0.45 + Math.min(people.length, 4) * 0.1);
-  await storeFactAndEvidence(row, domain, confidence, ownerEntityId, row.content.slice(0, 600));
+  await storeFactAndEvidence(
+    row,
+    primaryDomain,
+    domainCandidates,
+    confidence,
+    ownerEntityId,
+    seenAt.toISOString(),
+    row.content.slice(0, 600)
+  );
 
-  await upsertRollup(day, row.chat_namespace, domain, "messages_total", 1);
-  await upsertRollup(day, row.chat_namespace, domain, `source_${row.source_system}`, 1);
+  await upsertRollup(day, row.chat_namespace, primaryDomain, "messages_total", 1);
+  await upsertRollup(day, row.chat_namespace, primaryDomain, `source_${row.source_system}`, 1);
+  for (const candidate of domainCandidates) {
+    await upsertRollup(day, row.chat_namespace, candidate.domain, "messages_weighted", candidate.score);
+  }
   if (people.length > 0) {
     await upsertRollup(day, row.chat_namespace, "relationships", "person_mentions", people.length);
   }
@@ -435,54 +720,203 @@ function queryWindow(timeframe: string | undefined): string {
   }
 }
 
-async function searchEvidence(question: string, chatNamespace: string): Promise<EvidenceRef[]> {
+function tokenizeQuery(question: string): string[] {
+  const stop = new Set([
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "to",
+    "is",
+    "are",
+    "i",
+    "you",
+    "my",
+    "me",
+    "of",
+    "in",
+    "for",
+    "on",
+    "at",
+    "do",
+    "did",
+    "have",
+    "has",
+    "what",
+    "how",
+    "much"
+  ]);
+  return question
+    .toLowerCase()
+    .split(/[^a-z0-9_]+/i)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 3 && !stop.has(t))
+    .slice(0, 10);
+}
+
+interface EvidenceCandidate {
+  id: string;
+  content: string;
+  source_system: string;
+  source_timestamp: string | null;
+  vector_score: number;
+  text_score: number;
+  token_score: number;
+}
+
+async function searchEvidence(question: string, chatNamespace: string, timeframe: string | undefined): Promise<EvidenceRef[]> {
+  const interval = timeframe === "all" ? null : queryWindow(timeframe);
+  const keywords = tokenizeQuery(question);
   const vector = await getEmbedding(question);
   const literal = `[${vector.map((n) => Number(n).toFixed(8)).join(",")}]`;
-  const rows = await pool.query<{
-    id: string;
-    content: string;
-    source_system: string;
-    source_timestamp: string | null;
-    similarity: number;
-  }>(
-    `SELECT id, content, source_system, source_timestamp, 1 - (embedding <=> $1::vector) AS similarity
+
+  const [vectorRows, textRows] = await Promise.all([
+    pool.query<EvidenceCandidate>(
+      `SELECT
+         id,
+         content,
+         source_system,
+         source_timestamp,
+         1 - (embedding <=> $1::vector) AS vector_score,
+         0::float8 AS text_score,
+         0::float8 AS token_score
        FROM memory_items
       WHERE chat_namespace = $2
+        AND COALESCE(source_timestamp, created_at) <= now() + interval '1 day'
+        AND ($3::text IS NULL OR COALESCE(source_timestamp, created_at) >= now() - ($3::text)::interval)
       ORDER BY embedding <=> $1::vector
-      LIMIT 8`,
-    [literal, chatNamespace]
-  );
+      LIMIT 40`,
+      [literal, chatNamespace, interval]
+    ),
+    pool.query<EvidenceCandidate>(
+      `SELECT
+         id,
+         content,
+         source_system,
+         source_timestamp,
+         0::float8 AS vector_score,
+         GREATEST(similarity(lower(content), lower($1)), 0)::float8 AS text_score,
+         (
+           SELECT COUNT(*)::float8
+             FROM unnest($4::text[]) tok
+            WHERE length(tok) > 0
+              AND lower(memory_items.content) LIKE '%' || tok || '%'
+         ) / GREATEST(array_length($4::text[], 1), 1)::float8 AS token_score
+       FROM memory_items
+      WHERE chat_namespace = $2
+        AND COALESCE(source_timestamp, created_at) <= now() + interval '1 day'
+        AND ($3::text IS NULL OR COALESCE(source_timestamp, created_at) >= now() - ($3::text)::interval)
+        AND (
+          lower(content) % lower($1)
+          OR EXISTS (
+            SELECT 1
+              FROM unnest($4::text[]) tok
+             WHERE length(tok) > 0
+               AND lower(memory_items.content) LIKE '%' || tok || '%'
+          )
+        )
+      ORDER BY
+        (
+          GREATEST(similarity(lower(content), lower($1)), 0)::float8
+          + (
+              SELECT COUNT(*)::float8
+                FROM unnest($4::text[]) tok
+               WHERE length(tok) > 0
+                 AND lower(memory_items.content) LIKE '%' || tok || '%'
+            ) / GREATEST(array_length($4::text[], 1), 1)::float8
+        ) DESC,
+        COALESCE(source_timestamp, created_at) DESC
+      LIMIT 40`,
+      [question, chatNamespace, interval, keywords]
+    )
+  ]);
 
-  return rows.rows.map((row) => ({
+  const merged = new Map<string, EvidenceCandidate>();
+  for (const row of [...vectorRows.rows, ...textRows.rows]) {
+    const current = merged.get(row.id);
+    if (!current) {
+      merged.set(row.id, row);
+      continue;
+    }
+    merged.set(row.id, {
+      ...current,
+      vector_score: Math.max(Number(current.vector_score ?? 0), Number(row.vector_score ?? 0)),
+      text_score: Math.max(Number(current.text_score ?? 0), Number(row.text_score ?? 0)),
+      token_score: Math.max(Number(current.token_score ?? 0), Number(row.token_score ?? 0))
+    });
+  }
+
+  const ranked = Array.from(merged.values())
+    .map((row) => {
+      const vectorScore = Number(row.vector_score ?? 0);
+      const textScore = Number(row.text_score ?? 0);
+      const tokenScore = Number(row.token_score ?? 0);
+      const blended = Math.max(
+        0,
+        Math.min(1, vectorScore * 0.55 + textScore * 0.3 + tokenScore * 0.15)
+      );
+      return {
+        ...row,
+        blended
+      };
+    })
+    .sort((a, b) => b.blended - a.blended)
+    .slice(0, 10);
+
+  return ranked.map((row) => ({
     memoryId: row.id,
     sourceSystem: row.source_system as EvidenceRef["sourceSystem"],
     sourceTimestamp: row.source_timestamp ? new Date(row.source_timestamp).toISOString() : null,
     excerpt: row.content.slice(0, 280),
-    similarity: Number(row.similarity ?? 0)
+    similarity: Number(row.blended ?? 0)
   }));
 }
 
 function confidenceFromEvidence(evidence: EvidenceRef[]): ConfidenceScore {
   const best = evidence[0]?.similarity ?? 0;
-  if (best >= 0.78) return "high";
-  if (best >= 0.58) return "medium";
+  if (best >= 0.8) return "high";
+  if (best >= 0.6) return "medium";
   return "low";
+}
+
+function extractMoneyHints(text: string): string[] {
+  const matches = text.match(/\$?\d[\d,]*(?:\.\d{1,2})?/g) ?? [];
+  return Array.from(new Set(matches)).slice(0, 8);
 }
 
 function summarizeAnswer(question: string, evidence: EvidenceRef[]): string {
   if (evidence.length === 0) {
-    return "I found limited supporting memory for this question. Ingest more messages or expand timeframe.";
+    return "No reliable evidence found for this question in the selected timeframe. Try a broader timeframe or different wording.";
   }
-  const highlights = evidence.slice(0, 3).map((e, idx) => `${idx + 1}. ${e.excerpt}`).join("\n");
-  return `Based on your stored memory, here is the strongest evidence I found for: "${question}"\n${highlights}`;
+
+  const lowerQuestion = question.toLowerCase();
+  const isFinanceQuestion = /(money|net worth|balance|cash|income|savings|salary|expense)/.test(lowerQuestion);
+  if (isFinanceQuestion) {
+    const amounts = extractMoneyHints(evidence.map((e) => e.excerpt).join("\n"));
+    if (amounts.length === 0) {
+      return "I found finance-related messages, but no explicit balance/amount that can answer this directly. Evidence is listed below.";
+    }
+    return `I found explicit amounts in related messages: ${amounts.join(", ")}. Verify context in evidence before treating this as a final balance.`;
+  }
+
+  const highlights = evidence
+    .slice(0, 3)
+    .map((e, idx) => `${idx + 1}. ${e.excerpt}`)
+    .join("\n");
+  return `Strongest related memory evidence for "${question}":\n${highlights}`;
 }
 
 export async function runBrainQuery(input: BrainQueryRequest, privacyMode: PrivacyMode): Promise<BrainQueryResponse> {
   const chatNamespace = input.chatNamespace?.trim() || "personal.main";
   const question = input.question.trim();
-  const evidence = await searchEvidence(question, chatNamespace);
+  const evidence = await searchEvidence(question, chatNamespace, input.timeframe);
   const confidence = confidenceFromEvidence(evidence);
-  const answer = summarizeAnswer(question, evidence);
+  let answer = summarizeAnswer(question, evidence);
+
+  if (config.embeddingMode !== "openrouter") {
+    answer += "\n\nNote: semantic quality is limited while OPENBRAIN_EMBEDDING_MODE=mock.";
+  }
 
   return {
     ok: true,
@@ -519,12 +953,28 @@ export async function getBrainGraph(chatNamespace: string, privacyMode: PrivacyM
      JOIN brain_entities o ON o.id = e.object_entity_id
      WHERE e.chat_namespace = $1
      ORDER BY e.weight DESC
-     LIMIT 120`,
+     LIMIT 260`,
     [chatNamespace]
   );
 
+  const nodeScore = new Map<string, number>();
+  for (const row of rows.rows) {
+    nodeScore.set(row.subject_entity_id, (nodeScore.get(row.subject_entity_id) ?? 0) + Number(row.weight ?? 0));
+    nodeScore.set(row.object_entity_id, (nodeScore.get(row.object_entity_id) ?? 0) + Number(row.weight ?? 0));
+  }
+  const topNodeIds = new Set(
+    Array.from(nodeScore.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 70)
+      .map((entry) => entry[0])
+  );
+
+  const filteredRows = rows.rows
+    .filter((row) => topNodeIds.has(row.subject_entity_id) && topNodeIds.has(row.object_entity_id))
+    .slice(0, 170);
+
   const nodeMap = new Map<string, { id: string; label: string; nodeType: string; value: number }>();
-  const edges = rows.rows.map((row) => {
+  const edges = filteredRows.map((row) => {
     nodeMap.set(row.subject_entity_id, {
       id: row.subject_entity_id,
       label: row.subject_name,
@@ -559,33 +1009,63 @@ export async function getBrainGraph(chatNamespace: string, privacyMode: PrivacyM
 
 export async function getBehaviorCharts(chatNamespace: string, windowLabel: string, privacyMode: PrivacyMode): Promise<ChartPayload[]> {
   const rows = await pool.query<{ day: string; domain: string; metric_value: number }>(
-    `SELECT day::text, domain, SUM(metric_value)::float AS metric_value
-       FROM brain_daily_rollups
-      WHERE chat_namespace = $1
-        AND day >= (now() - $2::interval)::date
+    `SELECT
+       day::text,
+       domain,
+       COALESCE(
+         SUM(metric_value) FILTER (WHERE metric_key = 'messages_weighted'),
+         SUM(metric_value) FILTER (WHERE metric_key = 'messages_total'),
+         0
+       )::float AS metric_value
+     FROM brain_daily_rollups
+     WHERE chat_namespace = $1
+       AND day >= (now() - $2::interval)::date
+       AND day <= now()::date
+       AND metric_key IN ('messages_total', 'messages_weighted')
       GROUP BY day, domain
       ORDER BY day ASC`,
     [chatNamespace, windowLabel]
   );
 
   const labels = Array.from(new Set(rows.rows.map((row) => row.day))).sort();
-  const domains = ["relationships", "behavior", "mood", "work", "diet"];
-  const series = domains.map((domain) => ({
-    name: domain,
+  const lookup = new Map<string, Map<string, number>>();
+  for (const row of rows.rows) {
+    const day = row.day;
+    const domain = row.domain;
+    const dayMap = lookup.get(day) ?? new Map<string, number>();
+    dayMap.set(domain, Number(row.metric_value ?? 0));
+    lookup.set(day, dayMap);
+  }
+
+  const briefDomains = ["relationships", "behavior", "mood", "work", "diet"];
+  const briefSeries = briefDomains.map((domain) => ({
+    name: domainLabel(domain),
     data: labels.map((label) => {
-      const item = rows.rows.find((r) => r.day === label && r.domain === domain);
-      return Number(item?.metric_value ?? 0);
+      return Number(lookup.get(label)?.get(domain) ?? 0);
     })
+  }));
+
+  const behaviorDomains = ["behavior", "mood", "diet"];
+  const behaviorSeries = behaviorDomains.map((domain) => ({
+    name: domainLabel(domain),
+    data: labels.map((label) => Number(lookup.get(label)?.get(domain) ?? 0))
   }));
 
   return applyPrivacyToCharts(
     [
       {
-        id: "daily-domain-intensity",
-        title: "Daily Domain Intensity",
+        id: "brief-domain-weekly",
+        title: "Domain Mix",
+        chartType: "bar",
+        labels,
+        series: briefSeries
+      },
+      {
+        id: "behavior-trends",
+        title: "Habit and Mood Trend",
         chartType: "line",
         labels,
-        series
+        series: behaviorSeries
       }
     ],
     privacyMode
@@ -593,6 +1073,7 @@ export async function getBehaviorCharts(chatNamespace: string, windowLabel: stri
 }
 
 export async function listBrainInsights(chatNamespace: string, privacyMode: PrivacyMode): Promise<BrainInsight[]> {
+  await refreshSocialInsights(chatNamespace);
   const rows = await pool.query<{
     id: string;
     chat_namespace: string;
@@ -673,6 +1154,23 @@ export async function getBrainJobs(limit = 30): Promise<BrainJobStatus[]> {
   }));
 }
 
+async function clearDerivedStateForNamespace(chatNamespace: string): Promise<void> {
+  await pool.query(
+    `DELETE FROM brain_fact_evidence
+      WHERE fact_id IN (
+        SELECT id
+          FROM brain_facts
+         WHERE chat_namespace = $1
+      )`,
+    [chatNamespace]
+  );
+  await pool.query(`DELETE FROM brain_facts WHERE chat_namespace = $1`, [chatNamespace]);
+  await pool.query(`DELETE FROM brain_relationship_edges WHERE chat_namespace = $1`, [chatNamespace]);
+  await pool.query(`DELETE FROM brain_daily_rollups WHERE chat_namespace = $1`, [chatNamespace]);
+  await pool.query(`DELETE FROM brain_insight_snapshots WHERE chat_namespace = $1`, [chatNamespace]);
+  await pool.query(`DELETE FROM brain_entities WHERE chat_namespace = $1`, [chatNamespace]);
+}
+
 export async function rebuildBrainJob(params: {
   chatNamespace?: string;
   days?: number;
@@ -688,6 +1186,10 @@ export async function rebuildBrainJob(params: {
   );
   const jobId = job.rows[0]?.id;
   if (!jobId) throw new Error("Failed to create rebuild job");
+
+  if (params.chatNamespace && !params.domain) {
+    await clearDerivedStateForNamespace(params.chatNamespace);
+  }
 
   const queued = await pool.query<{ inserted: string }>(
     `WITH source_rows AS (
@@ -724,42 +1226,72 @@ export async function getPrivacyAwareTimeline(params: {
   start?: string;
   end?: string;
   domain?: string;
+  timeframe?: string;
   privacyMode: PrivacyMode;
 }): Promise<Array<Record<string, unknown>>> {
+  const fallbackStart = params.start ? null : (params.timeframe === "all" ? null : queryWindow(params.timeframe));
+  const safeEnd = params.end ?? new Date().toISOString();
   const rows = await pool.query<{
     id: string;
     domain: string;
     value_text: string;
     confidence: number;
     source_timestamp: string | null;
+    metadata: Record<string, unknown> | null;
   }>(
-    `SELECT id, domain, value_text, confidence, source_timestamp
+    `SELECT id, domain, value_text, confidence, source_timestamp, metadata
        FROM brain_facts
       WHERE chat_namespace = $1
         AND ($2::text IS NULL OR domain = $2)
+        AND (
+          $3::timestamptz IS NOT NULL
+          OR $5::text IS NULL
+          OR source_timestamp >= now() - ($5::text)::interval
+        )
         AND ($3::timestamptz IS NULL OR source_timestamp >= $3::timestamptz)
         AND ($4::timestamptz IS NULL OR source_timestamp <= $4::timestamptz)
       ORDER BY source_timestamp DESC NULLS LAST, created_at DESC
       LIMIT 200`,
-    [params.chatNamespace, params.domain ?? null, params.start ?? null, params.end ?? null]
+    [params.chatNamespace, params.domain ?? null, params.start ?? null, safeEnd, fallbackStart]
   );
 
-  return rows.rows.map((row) => ({
-    id: row.id,
-    domain: row.domain,
-    text: redactText(row.value_text, params.privacyMode),
-    confidence: Number(row.confidence ?? 0.5),
-    sourceTimestamp: row.source_timestamp ? new Date(row.source_timestamp).toISOString() : null
-  }));
+  return rows.rows.map((row) => {
+    const metadata = asRecord(row.metadata);
+    const candidatesRaw = metadata.domainCandidates;
+    const domains = Array.isArray(candidatesRaw)
+      ? candidatesRaw
+          .filter((item): item is { domain: string; score?: number } => Boolean(item) && typeof item === "object" && typeof (item as { domain?: unknown }).domain === "string")
+          .map((item) => String(item.domain))
+          .slice(0, 3)
+      : [];
+    const resolvedDomain = domains[0] ?? reclassifyTimelineDomain(row.domain, row.value_text, metadata);
+
+    return {
+      id: row.id,
+      domain: resolvedDomain,
+      domains: domains.length > 0 ? domains : [resolvedDomain],
+      text: redactText(row.value_text, params.privacyMode),
+      confidence: Number(row.confidence ?? 0.5),
+      sourceTimestamp: row.source_timestamp ? new Date(row.source_timestamp).toISOString() : null
+    };
+  });
 }
 
 export async function getProfileSummary(chatNamespace: string, timeframe: string, privacyMode: PrivacyMode): Promise<Record<string, unknown>> {
   const window = queryWindow(timeframe);
   const counts = await pool.query<{ domain: string; total: number }>(
-    `SELECT domain, SUM(metric_value)::float AS total
+    `SELECT
+       domain,
+       COALESCE(
+         SUM(metric_value) FILTER (WHERE metric_key = 'messages_weighted'),
+         SUM(metric_value) FILTER (WHERE metric_key = 'messages_total'),
+         0
+       )::float AS total
        FROM brain_daily_rollups
       WHERE chat_namespace = $1
         AND day >= (now() - $2::interval)::date
+        AND day <= now()::date
+        AND metric_key IN ('messages_total', 'messages_weighted')
       GROUP BY domain
       ORDER BY total DESC`,
     [chatNamespace, window]
@@ -770,20 +1302,21 @@ export async function getProfileSummary(chatNamespace: string, timeframe: string
        FROM brain_entities
       WHERE chat_namespace = $1
         AND entity_type = 'person'
+        AND COALESCE((metadata->>'owner')::boolean, false) = false
       ORDER BY weight DESC
-      LIMIT 12`,
+      LIMIT 64`,
     [chatNamespace]
   );
 
-  const people = topPeople.rows.map((row) => ({
-    name: privacyMode === "private" ? row.display_name : `Person-${Math.round(row.weight)}`,
+  const people = mergePeopleRows(topPeople.rows).slice(0, 12).map((row) => ({
+    name: privacyMode === "private" ? row.displayName : `Person-${Math.round(row.weight)}`,
     weight: Number(row.weight ?? 0)
   }));
 
   return {
     chatNamespace,
     timeframe,
-    topDomains: counts.rows.map((row) => ({ domain: row.domain, total: Number(row.total ?? 0) })),
+    topDomains: counts.rows.map((row) => ({ domain: domainLabel(row.domain), total: Number(row.total ?? 0) })),
     topPeople: people
   };
 }

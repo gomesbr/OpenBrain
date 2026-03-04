@@ -2,6 +2,7 @@
 import { basename, extname } from "node:path";
 import AdmZip from "adm-zip";
 import type { NormalizedMessage, ParseResult } from "../types.js";
+import { normalizeTimestamp } from "../time.js";
 
 function isPresent<T>(value: T | null | undefined): value is T {
   return value !== null && value !== undefined;
@@ -11,16 +12,35 @@ function loadJsonFromPath(inputPath: string): unknown {
   const ext = extname(inputPath).toLowerCase();
   if (ext === ".zip") {
     const zip = new AdmZip(inputPath);
-    const entry = zip
-      .getEntries()
-      .find((e) => /(^|\/)conversations\.json$/i.test(e.entryName));
-
-    if (!entry) {
-      throw new Error("ChatGPT ZIP export missing conversations.json");
+    const entries = zip.getEntries().filter((e) => !e.isDirectory);
+    const canonical = entries.find((e) => /(^|\/)conversations\.json$/i.test(e.entryName));
+    if (canonical) {
+      const raw = canonical.getData().toString("utf8");
+      return JSON.parse(raw);
     }
 
-    const raw = entry.getData().toString("utf8");
-    return JSON.parse(raw);
+    // Newer ChatGPT exports may shard conversations into conversations-000.json, conversations-001.json, etc.
+    const shards = entries
+      .filter((e) => /(^|\/)conversations-\d+\.json$/i.test(e.entryName))
+      .sort((a, b) => a.entryName.localeCompare(b.entryName));
+
+    if (shards.length === 0) {
+      throw new Error("ChatGPT ZIP export missing conversations.json or conversations-###.json shards");
+    }
+
+    const merged: unknown[] = [];
+    for (const shard of shards) {
+      const raw = shard.getData().toString("utf8");
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        merged.push(...parsed);
+        continue;
+      }
+      if (Array.isArray((parsed as any)?.conversations)) {
+        merged.push(...(parsed as any).conversations);
+      }
+    }
+    return merged;
   }
 
   const raw = readFileSync(inputPath, "utf8");
@@ -51,14 +71,7 @@ function roleFromUnknown(value: unknown): "user" | "assistant" | "system" {
 }
 
 function toIso(value: unknown): string | null {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return new Date(value * 1000).toISOString();
-  }
-  if (typeof value === "string" && value.trim()) {
-    const ms = Date.parse(value);
-    if (Number.isFinite(ms)) return new Date(ms).toISOString();
-  }
-  return null;
+  return normalizeTimestamp(value);
 }
 
 function parseConversationObject(

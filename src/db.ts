@@ -3,6 +3,7 @@ import { Pool } from "pg";
 import { config } from "./config.js";
 import { getEmbedding } from "./embedding_provider.js";
 import { extractMetadata } from "./metadata_provider.js";
+import { normalizeTimestamp } from "./time.js";
 import type {
   BatchCaptureItem,
   BatchCaptureRequest,
@@ -40,8 +41,7 @@ function toVectorLiteral(vector: number[]): string {
 
 function toIsoOrNull(value: string | null | undefined): string | null {
   if (!value) return null;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+  return normalizeTimestamp(value);
 }
 
 function toContentHash(input: string): string {
