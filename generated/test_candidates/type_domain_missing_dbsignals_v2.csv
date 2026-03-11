@@ -1,0 +1,4 @@
+type,domain,status,descriptive_rows,diagnostic_rows,predictive_rows,prescriptive_rows,causal_rows,counterfactual_rows,actionability_rows,active_days,day_max,day_avg,score_stddev
+"confidence_scoring","attention_productivity","not_found",134,28,48,46,17,32,48,76,8,1.763157894736842,0.04554893434831471
+"confidence_scoring","personality_traits","not_found",70,17,22,22,12,22,21,46,8,1.5217391304347827,0.04556205242433677
+"confidence_scoring","reputation_network_capital","not_found",276,69,83,137,50,77,110,151,25,1.8278145695364238,0.048684259413330946

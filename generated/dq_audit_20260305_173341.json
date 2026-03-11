@@ -1,0 +1,435 @@
+﻿{
+  "ok": true,
+  "generatedAt": "2026-03-05T22:33:44.853Z",
+  "summaryBySource": [
+    {
+      "source_system": "chatgpt",
+      "total_rows": "4139",
+      "v21_rows": "0",
+      "has_domain_scores": "0",
+      "system_events": "0",
+      "short_rows": "1157",
+      "mid_rows": "901",
+      "long_rows": "2081",
+      "punctuation_only": "30",
+      "lang_unknown": "4139"
+    },
+    {
+      "source_system": "codexclaw",
+      "total_rows": "351",
+      "v21_rows": "0",
+      "has_domain_scores": "0",
+      "system_events": "0",
+      "short_rows": "124",
+      "mid_rows": "85",
+      "long_rows": "142",
+      "punctuation_only": "0",
+      "lang_unknown": "351"
+    },
+    {
+      "source_system": "grok",
+      "total_rows": "2217",
+      "v21_rows": "0",
+      "has_domain_scores": "0",
+      "system_events": "0",
+      "short_rows": "869",
+      "mid_rows": "804",
+      "long_rows": "544",
+      "punctuation_only": "15",
+      "lang_unknown": "2217"
+    },
+    {
+      "source_system": "whatsapp",
+      "total_rows": "187837",
+      "v21_rows": "70",
+      "has_domain_scores": "70",
+      "system_events": "0",
+      "short_rows": "171365",
+      "mid_rows": "14870",
+      "long_rows": "1602",
+      "punctuation_only": "9865",
+      "lang_unknown": "187771"
+    }
+  ],
+  "taxonomyCoverage": [
+    {
+      "domain": "attention_productivity",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "career_trajectory",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "cognitive_style",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "communication_style",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "decision_behavior",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "digital_behavior",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "emotional_baseline",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "energy_management",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "ethics_privacy_boundaries",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "exercise_sports",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "family_relationships",
+      "published_rows": "4",
+      "strong_rows": "1",
+      "avg_score": "0.025",
+      "max_score": "0.500"
+    },
+    {
+      "domain": "financial_behavior",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "friendships",
+      "published_rows": "1",
+      "strong_rows": "1",
+      "avg_score": "0.010",
+      "max_score": "0.500"
+    },
+    {
+      "domain": "habit_systems",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "identity_profile",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "learning_growth",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "leisure_creativity",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "life_goals_planning",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "lifestyle_environment",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "meaning_spirituality",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "medical_context",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "memorable_moments",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "mental_health_signals",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "meta_memory_quality",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "nutrition_eating_behavior",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "personality_traits",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "personal_narrative",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "reputation_network_capital",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "risk_safety",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "romantic_relationship",
+      "published_rows": "49",
+      "strong_rows": "0",
+      "avg_score": "0.050",
+      "max_score": "0.050"
+    },
+    {
+      "domain": "sleep_recovery",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "social_graph_dynamics",
+      "published_rows": "17",
+      "strong_rows": "8",
+      "avg_score": "0.111",
+      "max_score": "0.500"
+    },
+    {
+      "domain": "substance_use",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "travel_mobility",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "values_beliefs",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    },
+    {
+      "domain": "work_performance",
+      "published_rows": "0",
+      "strong_rows": "0",
+      "avg_score": "0.000",
+      "max_score": "0.000"
+    }
+  ],
+  "nonTaxonomyDomainKeys": [
+    {
+      "domain_key": "technology",
+      "rows": "11",
+      "strong_rows": "4"
+    },
+    {
+      "domain_key": "education",
+      "rows": "10",
+      "strong_rows": "0"
+    },
+    {
+      "domain_key": "environment",
+      "rows": "10",
+      "strong_rows": "0"
+    },
+    {
+      "domain_key": "law",
+      "rows": "10",
+      "strong_rows": "3"
+    },
+    {
+      "domain_key": "communication",
+      "rows": "9",
+      "strong_rows": "6"
+    },
+    {
+      "domain_key": "finance",
+      "rows": "9",
+      "strong_rows": "0"
+    },
+    {
+      "domain_key": "health",
+      "rows": "9",
+      "strong_rows": "0"
+    },
+    {
+      "domain_key": "media",
+      "rows": "9",
+      "strong_rows": "0"
+    },
+    {
+      "domain_key": "science",
+      "rows": "9",
+      "strong_rows": "0"
+    },
+    {
+      "domain_key": "culture",
+      "rows": "8",
+      "strong_rows": "1"
+    },
+    {
+      "domain_key": "sports",
+      "rows": "8",
+      "strong_rows": "0"
+    },
+    {
+      "domain_key": "art",
+      "rows": "7",
+      "strong_rows": "0"
+    },
+    {
+      "domain_key": "history",
+      "rows": "7",
+      "strong_rows": "1"
+    },
+    {
+      "domain_key": "marketing",
+      "rows": "7",
+      "strong_rows": "0"
+    },
+    {
+      "domain_key": "security",
+      "rows": "7",
+      "strong_rows": "4"
+    },
+    {
+      "domain_key": "transportation",
+      "rows": "7",
+      "strong_rows": "0"
+    },
+    {
+      "domain_key": "agriculture",
+      "rows": "6",
+      "strong_rows": "0"
+    },
+    {
+      "domain_key": "business",
+      "rows": "6",
+      "strong_rows": "0"
+    },
+    {
+      "domain_key": "energy",
+      "rows": "6",
+      "strong_rows": "0"
+    },
+    {
+      "domain_key": "food",
+      "rows": "6",
+      "strong_rows": "0"
+    },
+    {
+      "domain_key": "philosophy",
+      "rows": "6",
+      "strong_rows": "0"
+    },
+    {
+      "domain_key": "real_estate",
+      "rows": "6",
+      "strong_rows": "0"
+    },
+    {
+      "domain_key": "travel",
+      "rows": "6",
+      "strong_rows": "0"
+    },
+    {
+      "domain_key": "entertainment",
+      "rows": "5",
+      "strong_rows": "0"
+    },
+    {
+      "domain_key": "fashion",
+      "rows": "5",
+      "strong_rows": "0"
+    }
+  ]
+}

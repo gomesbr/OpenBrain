@@ -3,6 +3,13 @@ import { Pool } from "pg";
 import { config } from "./config.js";
 import { getEmbedding } from "./embedding_provider.js";
 import { extractMetadata } from "./metadata_provider.js";
+import { parseTemporalIntent, temporalRelevance, timestampInHardRange } from "./query_time.js";
+import {
+  containsEmoji,
+  expandLexicalTokens,
+  extractContextKeywords,
+  toSemanticEmbeddingText
+} from "./semantic_text.js";
 import { normalizeTimestamp } from "./time.js";
 import type {
   BatchCaptureItem,
@@ -48,6 +55,21 @@ function toContentHash(input: string): string {
   return createHash("sha256").update(input).digest("hex");
 }
 
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasToken(text: string, token: string): boolean {
+  const hay = String(text ?? "").toLowerCase();
+  const t = String(token ?? "").toLowerCase();
+  if (!t) return false;
+  if (/^[a-z0-9_]+$/i.test(t)) {
+    const re = new RegExp(`(^|[^a-z0-9_])${escapeRegex(t)}([^a-z0-9_]|$)`, "i");
+    return re.test(hay);
+  }
+  return hay.includes(t);
+}
+
 interface DedupeResult {
   status: "inserted" | "deduped";
   existingId?: string;
@@ -66,6 +88,121 @@ interface MemoryItemRow {
   metadata: Record<string, unknown> | null;
   similarity: number | string;
   created_at: string | Date;
+}
+
+async function fetchConversationContextByItemIds(itemIds: string[]): Promise<Map<string, string>> {
+  if (itemIds.length === 0) return new Map<string, string>();
+  const rows = await pool.query<{ memory_id: string; context_text: string | null }>(
+    `WITH target AS (
+       SELECT
+         id,
+         source_system,
+         source_conversation_id,
+         chat_namespace,
+         COALESCE(source_timestamp, created_at) AS ts
+       FROM memory_items
+       WHERE id = ANY($1::uuid[])
+         AND source_conversation_id IS NOT NULL
+     )
+     SELECT
+       t.id::text AS memory_id,
+       STRING_AGG(c.content, ' ' ORDER BY COALESCE(c.source_timestamp, c.created_at) DESC) AS context_text
+     FROM target t
+     LEFT JOIN LATERAL (
+       SELECT content, source_timestamp, created_at
+       FROM memory_items c
+       WHERE c.source_system = t.source_system
+         AND c.source_conversation_id = t.source_conversation_id
+         AND c.chat_namespace IS NOT DISTINCT FROM t.chat_namespace
+         AND COALESCE(c.source_timestamp, c.created_at) <= t.ts
+       ORDER BY COALESCE(c.source_timestamp, c.created_at) DESC
+       LIMIT 8
+     ) c ON true
+     GROUP BY t.id`,
+    [itemIds]
+  );
+  const out = new Map<string, string>();
+  for (const row of rows.rows) {
+    out.set(String(row.memory_id), String(row.context_text ?? ""));
+  }
+  return out;
+}
+
+async function fetchConversationContextTerms(params: {
+  sourceSystem: string;
+  sourceConversationId: string | null;
+  chatNamespace: string | null;
+  sourceTimestamp: string | null;
+  limit?: number;
+}): Promise<string[]> {
+  if (!params.sourceConversationId || !params.sourceTimestamp) return [];
+  const limit = Number.isFinite(Number(params.limit))
+    ? Math.max(1, Math.min(20, Number(params.limit)))
+    : 8;
+
+  const rows = await pool.query<{ content: string }>(
+    `SELECT content
+       FROM memory_items
+      WHERE source_system = $1
+        AND source_conversation_id = $2
+        AND ($3::text IS NULL OR chat_namespace = $3::text)
+        AND source_timestamp IS NOT NULL
+        AND source_timestamp < $4::timestamptz
+      ORDER BY source_timestamp DESC
+      LIMIT $5`,
+    [
+      params.sourceSystem,
+      params.sourceConversationId,
+      params.chatNamespace ?? null,
+      params.sourceTimestamp,
+      limit
+    ]
+  );
+
+  return extractContextKeywords(rows.rows.map((row) => String(row.content ?? "")), 16);
+}
+
+async function fetchConversationContextWindow(params: {
+  sourceSystem: string;
+  sourceConversationId: string | null;
+  chatNamespace: string | null;
+  sourceTimestamp: string | null;
+  sourceMessageId: string | null;
+  limit?: number;
+}): Promise<string[]> {
+  if (!params.sourceConversationId) return [];
+  const limit = Number.isFinite(Number(params.limit))
+    ? Math.max(3, Math.min(16, Number(params.limit)))
+    : 10;
+
+  const rows = await pool.query<{ content: string }>(
+    `SELECT content
+       FROM memory_items
+      WHERE source_system = $1
+        AND source_conversation_id = $2
+        AND ($3::text IS NULL OR chat_namespace = $3::text)
+        AND (
+          ($4::timestamptz IS NOT NULL AND COALESCE(source_timestamp, created_at) < $4::timestamptz)
+          OR ($4::timestamptz IS NULL AND ($5::text IS NULL OR source_message_id IS DISTINCT FROM $5::text))
+        )
+      ORDER BY COALESCE(source_timestamp, created_at) DESC
+      LIMIT $6`,
+    [
+      params.sourceSystem,
+      params.sourceConversationId,
+      params.chatNamespace ?? null,
+      params.sourceTimestamp,
+      params.sourceMessageId,
+      limit
+    ]
+  );
+
+  return rows.rows
+    .map((row) => String(row.content ?? "").trim())
+    .filter((line) => line.length > 0)
+    .slice(0, limit)
+    .reverse()
+    .map((line) => line.slice(0, 360));
 }
 
 async function findExistingByDedupe(req: {
@@ -101,6 +238,11 @@ async function findExistingByDedupe(req: {
     if (bySourceTuple.rowCount && bySourceTuple.rows[0]?.id) {
       return { status: "deduped", existingId: bySourceTuple.rows[0].id, reason: "source_tuple" };
     }
+
+    // When upstream provides stable source tuple identity, keep each row distinct.
+    // Broad hash-based dedupe can incorrectly collapse short repeated messages
+    // (e.g. "yes", "ok") that occur in different contexts.
+    return null;
   }
 
   if (req.sourceTimestamp) {
@@ -108,14 +250,18 @@ async function findExistingByDedupe(req: {
       `SELECT id
          FROM memory_items
         WHERE content_hash = $1
-          AND role = $2
-          AND ($3::text IS NULL OR chat_namespace = $3::text)
+          AND source_system = $2
+          AND ($3::text IS NULL OR source_conversation_id = $3::text)
+          AND role = $4
+          AND ($5::text IS NULL OR chat_namespace = $5::text)
           AND source_timestamp IS NOT NULL
-          AND source_timestamp BETWEEN ($4::timestamptz - make_interval(mins => $5))
-                                   AND ($4::timestamptz + make_interval(mins => $5))
+          AND source_timestamp BETWEEN ($6::timestamptz - make_interval(mins => $7))
+                                   AND ($6::timestamptz + make_interval(mins => $7))
         LIMIT 1`,
       [
         req.contentHash,
+        req.sourceSystem,
+        req.sourceConversationId,
         req.role,
         req.chatNamespace,
         req.sourceTimestamp,
@@ -131,11 +277,13 @@ async function findExistingByDedupe(req: {
       `SELECT id
          FROM memory_items
         WHERE content_hash = $1
-          AND role = $2
-          AND ($3::text IS NULL OR chat_namespace = $3::text)
+          AND source_system = $2
+          AND ($3::text IS NULL OR source_conversation_id = $3::text)
+          AND role = $4
+          AND ($5::text IS NULL OR chat_namespace = $5::text)
           AND created_at >= now() - interval '90 minutes'
         LIMIT 1`,
-      [req.contentHash, req.role, req.chatNamespace]
+      [req.contentHash, req.sourceSystem, req.sourceConversationId, req.role, req.chatNamespace]
     );
 
     if (byHashRecent.rowCount && byHashRecent.rows[0]?.id) {
@@ -160,6 +308,28 @@ export async function captureMemory(req: CaptureMemoryRequest): Promise<CaptureM
   const chatNamespace = req.chatNamespace ? String(req.chatNamespace) : null;
   const idempotencyKey = req.idempotencyKey ? String(req.idempotencyKey) : null;
   const contentHash = toContentHash(content);
+  const useEmbeddingConversationContext = containsEmoji(content) || content.length <= 48;
+  const useMetadataConversationContext = containsEmoji(content) || content.length <= 220;
+
+  const contextTerms = useEmbeddingConversationContext
+    ? await fetchConversationContextTerms({
+        sourceSystem,
+        sourceConversationId,
+        chatNamespace,
+        sourceTimestamp
+      })
+    : [];
+  const contextWindow = useMetadataConversationContext
+    ? await fetchConversationContextWindow({
+        sourceSystem,
+        sourceConversationId,
+        chatNamespace,
+        sourceTimestamp,
+        sourceMessageId,
+        limit: 10
+      })
+    : [];
+  const semanticContent = toSemanticEmbeddingText(content, { contextTerms });
 
   const dedupe = await findExistingByDedupe({
     idempotencyKey,
@@ -183,8 +353,15 @@ export async function captureMemory(req: CaptureMemoryRequest): Promise<CaptureM
   }
 
   const [embedding, extracted] = await Promise.all([
-    getEmbedding(content),
-    req.skipMetadataExtraction ? Promise.resolve<Record<string, unknown>>({}) : extractMetadata(content)
+    getEmbedding(semanticContent),
+    req.skipMetadataExtraction
+      ? Promise.resolve<Record<string, unknown>>({})
+      : extractMetadata(content, {
+          contextWindow,
+          sourceSystem,
+          sourceConversationId,
+          chatNamespace
+        })
   ]);
 
   const metadata = {
@@ -419,10 +596,59 @@ export async function searchMemory(req: SearchMemoryRequest): Promise<SearchMemo
   if (!queryText) {
     return { ok: true, query: "", count: 0, matches: [] };
   }
+  const semanticQuery = toSemanticEmbeddingText(queryText);
+  const stop = new Set([
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "to",
+    "is",
+    "are",
+    "i",
+    "you",
+    "my",
+    "me",
+    "of",
+    "in",
+    "for",
+    "on",
+    "at",
+    "do",
+    "did",
+    "have",
+    "has",
+    "what",
+    "how",
+    "much",
+    "who",
+    "when",
+    "where",
+    "from",
+    "send",
+    "sent",
+    "today",
+    "yesterday",
+    "tomorrow"
+  ]);
+  const baseTokens = queryText
+    .toLowerCase()
+    .split(/[^a-z0-9_]+/i)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2);
+  const anchorTokens = expandLexicalTokens(baseTokens.filter((t) => t.length >= 3 && !stop.has(t))).slice(0, 12);
+  const lexicalTokens = anchorTokens.length > 0
+    ? anchorTokens
+    : expandLexicalTokens(baseTokens).slice(0, 12);
 
   const threshold = Number.isFinite(Number(req.threshold)) ? Number(req.threshold) : 0.55;
   const limit = Number.isFinite(Number(req.limit)) ? Math.max(1, Math.min(50, Number(req.limit))) : 10;
-  const embedding = await getEmbedding(queryText);
+  const temporalIntent = parseTemporalIntent(queryText);
+  const candidateLimit = temporalIntent.mode === "hard_range"
+    ? Math.max(limit * 6, 60)
+    : Math.max(limit * 4, 40);
+  const embedding = await getEmbedding(semanticQuery);
 
   const rows = await pool.query<MemoryItemRow>(
     `SELECT * FROM match_memory_items(
@@ -436,14 +662,95 @@ export async function searchMemory(req: SearchMemoryRequest): Promise<SearchMemo
     [
       toVectorLiteral(embedding),
       threshold,
-      limit,
+      candidateLimit,
       req.chatNamespace ?? null,
       req.sourceSystem ?? null,
       req.role ?? null
     ]
   );
 
-  const matches = rows.rows.map((row) => mapMatch(row));
+  const merged = new Map<string, SearchMemoryMatch>();
+  for (const row of rows.rows) {
+    const mapped = mapMatch(row);
+    merged.set(mapped.id, mapped);
+  }
+
+  const textRows = await pool.query<MemoryItemRow>(
+    `SELECT
+       id,
+       content,
+       role,
+       source_system,
+       source_conversation_id,
+       source_message_id,
+       source_timestamp,
+       chat_namespace,
+       metadata,
+       GREATEST(similarity(content, $1), 0)::float8 AS similarity,
+       created_at
+     FROM memory_items
+    WHERE ($2::text IS NULL OR chat_namespace = $2::text)
+      AND ($3::text IS NULL OR source_system = $3::text)
+      AND ($4::text IS NULL OR role = $4::text)
+      AND (
+        content % $1
+        OR EXISTS (
+          SELECT 1
+            FROM unnest($5::text[]) tok
+           WHERE length(tok) > 0
+             AND memory_items.content ILIKE '%' || tok || '%'
+        )
+      )
+    ORDER BY
+      GREATEST(similarity(content, $1), 0)::float8 DESC,
+      COALESCE(source_timestamp, created_at) DESC
+    LIMIT $6`,
+    [queryText, req.chatNamespace ?? null, req.sourceSystem ?? null, req.role ?? null, lexicalTokens, candidateLimit]
+  );
+
+  for (const row of textRows.rows) {
+    const mapped = mapMatch(row);
+    const prior = merged.get(mapped.id);
+    if (!prior || mapped.similarity > prior.similarity) {
+      merged.set(mapped.id, mapped);
+    }
+  }
+
+  const contextCandidateIds = Array.from(merged.values())
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, Math.min(candidateLimit, 32))
+    .map((item) => item.id);
+  const contextById = await fetchConversationContextByItemIds(contextCandidateIds);
+
+  const matches = Array.from(merged.values())
+    .map((item) => {
+      const lc = item.content.toLowerCase();
+      const hits = lexicalTokens.reduce((acc, token) => {
+        if (!token) return acc;
+        return hasToken(lc, token) ? acc + 1 : acc;
+      }, 0);
+      const contextText = (contextById.get(item.id) ?? "").toLowerCase();
+      const contextHits = lexicalTokens.reduce((acc, token) => {
+        if (!token) return acc;
+        return hasToken(contextText, token) ? acc + 1 : acc;
+      }, 0);
+      const temporal = temporalRelevance(item.sourceTimestamp, temporalIntent);
+      const score = item.similarity * 0.68 + temporal * 0.26 + hits * 0.02 + contextHits * 0.04;
+      return { ...item, __hits: hits, __ctxHits: contextHits, __temporal: temporal, __score: score };
+    })
+    .filter((item) => timestampInHardRange(item.sourceTimestamp, temporalIntent))
+    .sort((a, b) => {
+      if (b.__score !== a.__score) return b.__score - a.__score;
+      if (b.__ctxHits !== a.__ctxHits) return b.__ctxHits - a.__ctxHits;
+      if (b.__hits !== a.__hits) return b.__hits - a.__hits;
+      return b.similarity - a.similarity;
+    })
+    .map((item) => {
+      const { __hits, __ctxHits, __temporal, __score, ...rest } = item;
+      return rest;
+    })
+    .slice(0, limit);
+
   return {
     ok: true,
     query: queryText,

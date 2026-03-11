@@ -2,6 +2,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pool } from "../db.js";
 import { getEmbedding } from "../embedding_provider.js";
+import { toSemanticEmbeddingText } from "../semantic_text.js";
+import { containsEmoji, extractContextKeywords } from "../semantic_text.js";
 
 type Checkpoint = {
   lastCreatedAt: string | null;
@@ -94,6 +96,28 @@ function isLikelyCreditOrQuotaError(error: unknown): boolean {
   );
 }
 
+async function fetchConversationContextTerms(params: {
+  sourceSystem: string;
+  sourceConversationId: string | null;
+  chatNamespace: string | null;
+  sourceTimestamp: string | null;
+}): Promise<string[]> {
+  if (!params.sourceConversationId || !params.sourceTimestamp) return [];
+  const rows = await pool.query<{ content: string }>(
+    `SELECT content
+       FROM memory_items
+      WHERE source_system = $1
+        AND source_conversation_id = $2
+        AND ($3::text IS NULL OR chat_namespace = $3::text)
+        AND source_timestamp IS NOT NULL
+        AND source_timestamp < $4::timestamptz
+      ORDER BY source_timestamp DESC
+      LIMIT 8`,
+    [params.sourceSystem, params.sourceConversationId, params.chatNamespace, params.sourceTimestamp]
+  );
+  return extractContextKeywords(rows.rows.map((row) => String(row.content ?? "")), 16);
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const checkpointPath = args.checkpointPath;
@@ -132,9 +156,13 @@ async function main(): Promise<void> {
     const rows = await pool.query<{
       id: string;
       content: string;
+      source_system: string;
+      source_conversation_id: string | null;
+      chat_namespace: string | null;
+      source_timestamp: string | null;
       created_at: string;
     }>(
-      `SELECT id, content, created_at
+      `SELECT id, content, source_system, source_conversation_id, chat_namespace, source_timestamp, created_at
          FROM memory_items
         WHERE ($1::text IS NULL OR chat_namespace = $1::text)
           AND ($2::text IS NULL OR source_system = $2::text)
@@ -153,7 +181,16 @@ async function main(): Promise<void> {
 
     for (const row of rows.rows) {
       try {
-        const embedding = await getEmbedding(row.content);
+        const shouldUseConversationContext = containsEmoji(row.content) || row.content.length <= 48;
+        const contextTerms = shouldUseConversationContext
+          ? await fetchConversationContextTerms({
+              sourceSystem: row.source_system,
+              sourceConversationId: row.source_conversation_id,
+              chatNamespace: row.chat_namespace,
+              sourceTimestamp: row.source_timestamp
+            })
+          : [];
+        const embedding = await getEmbedding(toSemanticEmbeddingText(row.content, { contextTerms }));
         await pool.query(
           `UPDATE memory_items
               SET embedding = $1::vector,

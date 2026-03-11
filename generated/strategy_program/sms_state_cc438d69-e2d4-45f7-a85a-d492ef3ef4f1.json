@@ -1,0 +1,35 @@
+{
+  "initialized": true,
+  "variantStatus": {
+    "S0.v1": "failed",
+    "S1.v1": "running",
+    "S2.v1": "running",
+    "S3.v1": "running",
+    "S4.v1": "failed",
+    "S5.v1": "queued",
+    "S6.v1": "queued",
+    "S7.v1": "queued",
+    "S8.v1": "queued",
+    "S9.v1": "queued",
+    "S10.v1": "queued",
+    "S11.v1": "queued",
+    "S12.v1": "queued",
+    "S13.v1": "queued",
+    "S14.v1": "queued",
+    "S15.v1": "queued",
+    "S0.v2": "failed",
+    "S4.v2": "running"
+  },
+  "maxGroupSeen": 1,
+  "notifiedGroupFailed": [],
+  "notifiedResearchStart": [],
+  "notifiedGroupCreated": [],
+  "notifiedFirstRunning": [],
+  "processStopNotified": false,
+  "deliveredNotificationIds": [
+    "strategy_failed_S0.v1",
+    "strategy_failed_S0.v2",
+    "strategy_failed_S4.v1"
+  ],
+  "pendingNotifications": {}
+}

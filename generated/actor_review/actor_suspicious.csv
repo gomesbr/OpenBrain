@@ -1,0 +1,18 @@
+actor_id,canonical_name,actor_type,message_count,source_systems,phone_numbers,flags
+6006f107-7037-444c-997a-ca404553c5a5,Sai,contact,50,whatsapp,,whatsapp_single_token_name
+3f100d9f-487a-4e7d-8c0a-9e0b131b7dc8,Couples,contact,3,whatsapp,,filler_like_token
+a4d7cba8-f8eb-4941-972c-483aadf4dab4,Jacob Wright,contact,1,whatsapp,,single_message_contact
+79eac68a-7bdd-40a7-8333-8d22a41d8115,Karina,contact,1,whatsapp,,single_message_contact
+e55c8e0a-afbb-42e7-8e32-4186125287e5,Vic,contact,1,whatsapp,,short_low_signal|single_message_contact|whatsapp_single_token_name
+79163ada-86d1-4336-ae39-3e6327fa1692,Yan Yang,contact,1,whatsapp,,single_message_contact
+a623e798-8c11-4ba4-bf8d-4f7fd79cc345, Ale,contact,0,,,short_low_signal
+a451d041-e17b-4578-b863-ca5e33469c46, Ana,contact,0,,,short_low_signal
+1bd491ca-20ee-4e99-a89e-cde9ee41b718, Dri,contact,0,,,short_low_signal
+17542fe3-bc02-47ec-983f-35770c121494, Ivàn,contact,0,,,short_low_signal
+917ce06e-3025-4bd5-b6ce-9c663094e018, Jan,contact,0,,,short_low_signal
+42c0b2fe-b57b-4278-8f43-6711816358bf, Jose,contact,0,,,short_low_signal
+4c2af5fb-4289-4cb8-95bb-a8b37423ea91, Kris🧚‍♂️✨️,contact,0,,,short_low_signal
+02233c63-cc42-460b-ae12-ea7281b90989, Mari,contact,0,,,short_low_signal
+68715984-00ca-4c3e-9dc2-84dc314eb9b3, Ryan,contact,0,,,short_low_signal
+00968191-ec4f-48de-bce9-b00698915aba, Tony,contact,0,,,short_low_signal
+bbba776c-6b3c-47c6-89a6-aa399a70623a, ˣɢʀɪɴɢᴀㅤᵖᵈᵐ,contact,0,,,no_alpha_chars

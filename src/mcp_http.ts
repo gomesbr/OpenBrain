@@ -3,12 +3,114 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { batchCapture, captureMemory, getStats, listRecent, searchMemory } from "./db.js";
+import { askV2, submitAskFeedback } from "./v2_ask.js";
+import { getQualityMetrics } from "./v2_quality.js";
+import { searchPublishedFacts, searchPublishedGraph } from "./v2_search.js";
 
 export async function mountMcpHttp(app: Express, path = "/mcp"): Promise<void> {
   const mcpServer = new McpServer({
     name: "openbrain",
     version: "1.0.0"
   });
+
+  mcpServer.registerTool(
+    "openbrain.ask",
+    {
+      title: "OpenBrain Ask V2",
+      description: "Ask OpenBrain V2 with multi-agent reasoning and quality gate contract.",
+      inputSchema: {
+        question: z.string().min(2),
+        chatNamespace: z.string().optional(),
+        timeframe: z.enum(["7d", "30d", "90d", "365d", "all"]).optional(),
+        mode: z.enum(["lookup", "pattern", "diagnosis", "prediction", "recommendation"]).optional(),
+        maxLoops: z.number().int().min(1).max(3).optional(),
+        conversationId: z.string().optional(),
+        context: z.record(z.unknown()).optional()
+      }
+    },
+    async (input) => {
+      const result = await askV2(input as any, { kind: "service", serviceName: "mcp", serviceId: "mcp" });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }]
+      };
+    }
+  );
+
+  mcpServer.registerTool(
+    "openbrain.feedback",
+    {
+      title: "OpenBrain Feedback V2",
+      description: "Submit yes/no/correction feedback for a V2 answer run.",
+      inputSchema: {
+        answerRunId: z.string().min(1),
+        verdict: z.enum(["yes", "no", "partial"]),
+        correction: z.string().optional(),
+        correctedValue: z.record(z.unknown()).optional(),
+        asOfDate: z.string().optional(),
+        scope: z.string().optional()
+      }
+    },
+    async (input) => {
+      const result = await submitAskFeedback(input as any);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }]
+      };
+    }
+  );
+
+  mcpServer.registerTool(
+    "openbrain.search_facts",
+    {
+      title: "OpenBrain Search Facts",
+      description: "Search published facts/canonical fact candidates.",
+      inputSchema: {
+        query: z.string().min(2),
+        chatNamespace: z.string().optional(),
+        limit: z.number().int().min(1).max(100).optional()
+      }
+    },
+    async (input) => {
+      const result = await searchPublishedFacts(input as any);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }]
+      };
+    }
+  );
+
+  mcpServer.registerTool(
+    "openbrain.search_graph",
+    {
+      title: "OpenBrain Search Graph",
+      description: "Fetch published relationship graph payload.",
+      inputSchema: {
+        chatNamespace: z.string().optional(),
+        limit: z.number().int().min(10).max(500).optional()
+      }
+    },
+    async (input) => {
+      const result = await searchPublishedGraph(input as any);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }]
+      };
+    }
+  );
+
+  mcpServer.registerTool(
+    "openbrain.quality_metrics",
+    {
+      title: "OpenBrain Quality Metrics",
+      description: "Get quality gate metrics across artifact types.",
+      inputSchema: {
+        days: z.number().int().min(1).max(3650).optional()
+      }
+    },
+    async (input) => {
+      const result = await getQualityMetrics(input.days ?? 30);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }]
+      };
+    }
+  );
 
   mcpServer.registerTool(
     "capture_thought",

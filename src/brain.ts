@@ -3,6 +3,17 @@ import { config } from "./config.js";
 import { pool } from "./db.js";
 import { getEmbedding } from "./embedding_provider.js";
 import {
+  computeFinanceSignal,
+  detectQueryIntent,
+  extractMoneyAmounts,
+  hasMoneyAmount,
+  isPersonalFinanceEvidenceCandidate,
+  isBalanceEvidenceCandidate,
+  summarizeFinanceBalance
+} from "./finance_intent.js";
+import { parseTemporalIntent, temporalRelevance, timestampInHardRange } from "./query_time.js";
+import { expandLexicalTokens, toSemanticEmbeddingText } from "./semantic_text.js";
+import {
   applyPrivacyToCharts,
   applyPrivacyToEvidence,
   applyPrivacyToGraph,
@@ -76,6 +87,53 @@ const STOP_NAMES = new Set([
   "WhatsApp",
   "ChatGPT",
   "Grok"
+]);
+
+const NON_PERSON_TOKENS = new Set([
+  "the",
+  "this",
+  "that",
+  "these",
+  "those",
+  "and",
+  "or",
+  "but",
+  "if",
+  "just",
+  "let",
+  "can",
+  "what",
+  "when",
+  "where",
+  "why",
+  "how",
+  "yes",
+  "no",
+  "ok",
+  "okay",
+  "yeah",
+  "yep",
+  "ahh",
+  "ahhh",
+  "haha",
+  "hahaha",
+  "hehe",
+  "lol",
+  "lmao",
+  "vou",
+  "por",
+  "pra",
+  "pero",
+  "que",
+  "si",
+  "isso",
+  "esta",
+  "gracias",
+  "felicidades",
+  "couples",
+  "neighbors",
+  "allstars",
+  "amex"
 ]);
 
 let workerTimer: NodeJS.Timeout | null = null;
@@ -304,28 +362,53 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function detectPeople(content: string, metadata: Record<string, unknown>, sourceConversationId: string | null): string[] {
   const names = new Set<string>();
+  const contentKind = typeof metadata.content_kind === "string" ? metadata.content_kind : "";
+
+  const isLikelyNoisePersonName = (value: string): boolean => {
+    const raw = String(value ?? "").trim();
+    if (!raw) return true;
+    if (raw.length < 2 || raw.length > 48) return true;
+    if (/https?:\/\//i.test(raw)) return true;
+
+    const normalized = normalizeName(raw);
+    if (!normalized) return true;
+    if (NON_PERSON_TOKENS.has(normalized)) return true;
+    if (/^(ha){2,}|(he){2,}|(hi){3,}|(ah){2,}$/.test(normalized)) return true;
+    if (/^\d+$/.test(normalized)) return true;
+
+    const parts = normalized.split(" ").filter(Boolean);
+    if (parts.length > 4) return true;
+    if (parts.length === 1 && parts[0].length <= 2) return true;
+    return false;
+  };
 
   const speaker = metadata.speaker;
-  if (typeof speaker === "string" && speaker.trim()) {
+  if (typeof speaker === "string" && speaker.trim() && !isLikelyNoisePersonName(speaker)) {
     names.add(speaker.trim());
   }
 
   const peopleRaw = metadata.people;
   if (Array.isArray(peopleRaw)) {
     for (const item of peopleRaw) {
-      if (typeof item === "string" && item.trim()) names.add(item.trim());
+      if (typeof item === "string" && item.trim() && !isLikelyNoisePersonName(item)) {
+        names.add(item.trim());
+      }
     }
   }
 
   const conversationLabel = parseWhatsappConversationLabel(sourceConversationId);
-  if (conversationLabel && !isLikelyGroupLabel(conversationLabel)) {
+  if (conversationLabel && !isLikelyGroupLabel(conversationLabel) && !isLikelyNoisePersonName(conversationLabel)) {
     names.add(conversationLabel);
   }
 
-  const matches = content.match(NAME_RE) ?? [];
-  for (const match of matches) {
-    if (STOP_NAMES.has(match)) continue;
-    names.add(match.trim());
+  // Avoid noisy regex name extraction on highly structured content.
+  if (contentKind !== "table" && contentKind !== "number_series") {
+    const matches = content.match(NAME_RE) ?? [];
+    for (const match of matches) {
+      if (STOP_NAMES.has(match)) continue;
+      if (isLikelyNoisePersonName(match)) continue;
+      names.add(match.trim());
+    }
   }
 
   return Array.from(names).slice(0, 12);
@@ -607,10 +690,13 @@ async function processMemoryItem(memoryItemId: string): Promise<void> {
 async function claimPendingItems(limit: number): Promise<PendingJobItem[]> {
   const result = await pool.query<PendingJobItem>(
     `WITH to_claim AS (
-       SELECT id
-         FROM brain_job_items
-        WHERE status = 'pending'
-        ORDER BY created_at ASC
+       SELECT i.id
+         FROM brain_job_items i
+         JOIN brain_jobs j ON j.id = i.job_id
+        WHERE i.status = 'pending'
+          AND j.job_type = 'rebuild'
+          AND j.status = 'running'
+        ORDER BY j.created_at DESC, i.created_at ASC
         LIMIT $1
         FOR UPDATE SKIP LOCKED
      )
@@ -625,10 +711,28 @@ async function claimPendingItems(limit: number): Promise<PendingJobItem[]> {
   return result.rows;
 }
 
+async function repairInconsistentRebuildJobStatuses(): Promise<void> {
+  await pool.query(
+    `UPDATE brain_jobs j
+        SET status = 'running',
+            finished_at = NULL,
+            updated_at = now()
+      WHERE j.job_type = 'rebuild'
+        AND j.status IN ('completed', 'failed', 'partial')
+        AND EXISTS (
+          SELECT 1
+            FROM brain_job_items i
+           WHERE i.job_id = j.id
+             AND i.status IN ('pending', 'running')
+        )`
+  );
+}
+
 async function runWorkerTick(): Promise<void> {
   if (workerRunning) return;
   workerRunning = true;
   try {
+    await repairInconsistentRebuildJobStatuses();
     const items = await claimPendingItems(40);
     for (const item of items) {
       try {
@@ -697,6 +801,9 @@ export function startBrainWorker(): void {
       // ignore transient worker errors; status rows capture failures.
     });
   }, 5000);
+  void runWorkerTick().catch(() => {
+    // ignore transient worker errors; status rows capture failures.
+  });
 }
 
 export function stopBrainWorker(): void {
@@ -745,30 +852,190 @@ function tokenizeQuery(question: string): string[] {
     "has",
     "what",
     "how",
-    "much"
+    "much",
+    "who",
+    "when",
+    "where",
+    "from",
+    "send",
+    "sent",
+    "today",
+    "yesterday",
+    "tomorrow"
   ]);
-  return question
+  const base = question
     .toLowerCase()
     .split(/[^a-z0-9_]+/i)
     .map((t) => t.trim())
     .filter((t) => t.length >= 3 && !stop.has(t))
     .slice(0, 10);
+  return expandLexicalTokens(base);
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasToken(text: string, token: string): boolean {
+  const hay = String(text ?? "").toLowerCase();
+  const t = String(token ?? "").toLowerCase();
+  if (!t) return false;
+  if (/^[a-z0-9_]+$/i.test(t)) {
+    const re = new RegExp(`(^|[^a-z0-9_])${escapeRegex(t)}([^a-z0-9_]|$)`, "i");
+    return re.test(hay);
+  }
+  return hay.includes(t);
 }
 
 interface EvidenceCandidate {
   id: string;
   content: string;
+  role: string;
   source_system: string;
+  source_conversation_id: string | null;
+  chat_namespace: string | null;
   source_timestamp: string | null;
+  metadata: Record<string, unknown> | null;
   vector_score: number;
   text_score: number;
   token_score: number;
 }
 
+interface QueryFacetHints {
+  people: string[];
+  quotedPhrases: string[];
+  sourceSystems: string[];
+  keywordSet: Set<string>;
+}
+
+function extractQueryFacetHints(question: string): QueryFacetHints {
+  const lower = String(question ?? "").toLowerCase();
+  const quotedPhrases = Array.from(question.matchAll(/"([^"]{2,80})"/g))
+    .map((match) => String(match[1] ?? "").trim().toLowerCase())
+    .filter(Boolean);
+  const people = detectPeople(question, {}, null)
+    .filter((name) => !isOwnerAlias(name))
+    .map((name) => normalizeName(name))
+    .filter(Boolean);
+  const sourceSystems = [
+    /\bwhatsapp\b/.test(lower) ? "whatsapp" : "",
+    /\btelegram\b/.test(lower) ? "telegram" : "",
+    /\bchatgpt\b/.test(lower) ? "chatgpt" : "",
+    /\bgrok\b/.test(lower) ? "grok" : "",
+    /\bopenai\b/.test(lower) ? "openai" : ""
+  ].filter(Boolean);
+  const keywordSet = new Set(
+    tokenizeQuery(question)
+      .map((token) => token.toLowerCase())
+      .filter((token) => token.length >= 3)
+  );
+  return {
+    people,
+    quotedPhrases,
+    sourceSystems,
+    keywordSet
+  };
+}
+
+function computeMetadataFacetScore(
+  row: EvidenceCandidate,
+  queryHints: QueryFacetHints,
+  temporalIntent: ReturnType<typeof parseTemporalIntent>
+): number {
+  const metadata = asRecord(row.metadata);
+  const people = new Set<string>();
+  for (const item of detectPeople(row.content, metadata, row.source_conversation_id)) {
+    const normalized = normalizeName(item);
+    if (normalized) people.add(normalized);
+  }
+  for (const item of toStringArray(metadata.people)) {
+    const normalized = normalizeName(item);
+    if (normalized) people.add(normalized);
+  }
+  const topics = new Set(toStringArray(metadata.topics).map((item) => item.toLowerCase()));
+  const dates = new Set(toStringArray(metadata.dates_mentioned));
+  const label = String(parseWhatsappConversationLabel(row.source_conversation_id) ?? "").trim().toLowerCase();
+
+  let score = 0;
+  if (queryHints.people.length > 0 && queryHints.people.some((name) => people.has(name) || label.includes(name))) {
+    score += 0.45;
+  }
+  if (queryHints.quotedPhrases.length > 0 && queryHints.quotedPhrases.some((phrase) => (
+    phrase && (
+      row.content.toLowerCase().includes(phrase)
+      || label.includes(phrase)
+      || Array.from(topics).some((topic) => topic.includes(phrase))
+    )
+  ))) {
+    score += 0.3;
+  }
+  if (queryHints.keywordSet.size > 0) {
+    const topicOverlap = Array.from(queryHints.keywordSet).reduce((acc, token) => (
+      acc + Number(Array.from(topics).some((topic) => hasToken(topic, token)) || hasToken(label, token))
+    ), 0);
+    score += Math.min(0.2, topicOverlap * 0.05);
+  }
+  if (queryHints.sourceSystems.length > 0 && queryHints.sourceSystems.includes(String(row.source_system ?? "").toLowerCase())) {
+    score += 0.15;
+  }
+  if (dates.size > 0 && temporalIntent.start && temporalIntent.end) {
+    const temporalHit = Array.from(dates).some((value) => {
+      const ms = Date.parse(value);
+      return Number.isFinite(ms) && ms >= temporalIntent.start!.getTime() && ms <= temporalIntent.end!.getTime();
+    });
+    if (temporalHit) score += 0.12;
+  }
+  return Math.max(0, Math.min(1, score));
+}
+
+async function fetchConversationContextByEvidenceIds(itemIds: string[]): Promise<Map<string, string>> {
+  if (itemIds.length === 0) return new Map<string, string>();
+  const rows = await pool.query<{ memory_id: string; context_text: string | null }>(
+    `WITH target AS (
+       SELECT
+         id,
+         source_system,
+         source_conversation_id,
+         chat_namespace,
+         COALESCE(source_timestamp, created_at) AS ts
+       FROM memory_items
+       WHERE id = ANY($1::uuid[])
+         AND source_conversation_id IS NOT NULL
+     )
+     SELECT
+       t.id::text AS memory_id,
+       STRING_AGG(c.content, ' ' ORDER BY COALESCE(c.source_timestamp, c.created_at) DESC) AS context_text
+     FROM target t
+     LEFT JOIN LATERAL (
+       SELECT content, source_timestamp, created_at
+       FROM memory_items c
+       WHERE c.source_system = t.source_system
+         AND c.source_conversation_id = t.source_conversation_id
+         AND COALESCE(c.chat_namespace, '') = COALESCE(t.chat_namespace, '')
+         AND COALESCE(c.source_timestamp, c.created_at) <= t.ts
+       ORDER BY COALESCE(c.source_timestamp, c.created_at) DESC
+       LIMIT 8
+     ) c ON true
+     GROUP BY t.id`,
+    [itemIds]
+  );
+  const out = new Map<string, string>();
+  for (const row of rows.rows) {
+    out.set(String(row.memory_id), String(row.context_text ?? ""));
+  }
+  return out;
+}
+
 async function searchEvidence(question: string, chatNamespace: string, timeframe: string | undefined): Promise<EvidenceRef[]> {
   const interval = timeframe === "all" ? null : queryWindow(timeframe);
   const keywords = tokenizeQuery(question);
-  const vector = await getEmbedding(question);
+  const intent = detectQueryIntent(question);
+  const temporalIntent = parseTemporalIntent(question);
+  const queryHints = extractQueryFacetHints(question);
+  const temporalStart = temporalIntent.start ? temporalIntent.start.toISOString() : null;
+  const temporalEnd = temporalIntent.end ? temporalIntent.end.toISOString() : null;
+  const candidateLimit = temporalIntent.mode === "hard_range" ? 120 : intent.kind === "finance_balance" ? 180 : 60;
+  const vector = await getEmbedding(toSemanticEmbeddingText(question));
   const literal = `[${vector.map((n) => Number(n).toFixed(8)).join(",")}]`;
 
   const [vectorRows, textRows] = await Promise.all([
@@ -776,8 +1043,12 @@ async function searchEvidence(question: string, chatNamespace: string, timeframe
       `SELECT
          id,
          content,
+         role,
          source_system,
+         source_conversation_id,
+         chat_namespace,
          source_timestamp,
+         metadata,
          1 - (embedding <=> $1::vector) AS vector_score,
          0::float8 AS text_score,
          0::float8 AS token_score
@@ -785,33 +1056,41 @@ async function searchEvidence(question: string, chatNamespace: string, timeframe
       WHERE chat_namespace = $2
         AND COALESCE(source_timestamp, created_at) <= now() + interval '1 day'
         AND ($3::text IS NULL OR COALESCE(source_timestamp, created_at) >= now() - ($3::text)::interval)
+        AND ($4::timestamptz IS NULL OR COALESCE(source_timestamp, created_at) >= $4::timestamptz)
+        AND ($5::timestamptz IS NULL OR COALESCE(source_timestamp, created_at) <= $5::timestamptz)
       ORDER BY embedding <=> $1::vector
-      LIMIT 40`,
-      [literal, chatNamespace, interval]
+      LIMIT $6`,
+      [literal, chatNamespace, interval, temporalStart, temporalEnd, candidateLimit]
     ),
     pool.query<EvidenceCandidate>(
       `SELECT
          id,
          content,
+         role,
          source_system,
+         source_conversation_id,
+         chat_namespace,
          source_timestamp,
+         metadata,
          0::float8 AS vector_score,
          GREATEST(similarity(lower(content), lower($1)), 0)::float8 AS text_score,
          (
            SELECT COUNT(*)::float8
-             FROM unnest($4::text[]) tok
+             FROM unnest($6::text[]) tok
             WHERE length(tok) > 0
               AND lower(memory_items.content) LIKE '%' || tok || '%'
-         ) / GREATEST(array_length($4::text[], 1), 1)::float8 AS token_score
+         ) / GREATEST(array_length($6::text[], 1), 1)::float8 AS token_score
        FROM memory_items
       WHERE chat_namespace = $2
         AND COALESCE(source_timestamp, created_at) <= now() + interval '1 day'
         AND ($3::text IS NULL OR COALESCE(source_timestamp, created_at) >= now() - ($3::text)::interval)
+        AND ($4::timestamptz IS NULL OR COALESCE(source_timestamp, created_at) >= $4::timestamptz)
+        AND ($5::timestamptz IS NULL OR COALESCE(source_timestamp, created_at) <= $5::timestamptz)
         AND (
           lower(content) % lower($1)
           OR EXISTS (
             SELECT 1
-              FROM unnest($4::text[]) tok
+              FROM unnest($6::text[]) tok
              WHERE length(tok) > 0
                AND lower(memory_items.content) LIKE '%' || tok || '%'
           )
@@ -821,14 +1100,14 @@ async function searchEvidence(question: string, chatNamespace: string, timeframe
           GREATEST(similarity(lower(content), lower($1)), 0)::float8
           + (
               SELECT COUNT(*)::float8
-                FROM unnest($4::text[]) tok
+                FROM unnest($6::text[]) tok
                WHERE length(tok) > 0
                  AND lower(memory_items.content) LIKE '%' || tok || '%'
-            ) / GREATEST(array_length($4::text[], 1), 1)::float8
+            ) / GREATEST(array_length($6::text[], 1), 1)::float8
         ) DESC,
         COALESCE(source_timestamp, created_at) DESC
-      LIMIT 40`,
-      [question, chatNamespace, interval, keywords]
+      LIMIT $7`,
+      [question, chatNamespace, interval, temporalStart, temporalEnd, keywords, candidateLimit]
     )
   ]);
 
@@ -847,19 +1126,45 @@ async function searchEvidence(question: string, chatNamespace: string, timeframe
     });
   }
 
+  const contextById = await fetchConversationContextByEvidenceIds(Array.from(merged.keys()));
+
   const ranked = Array.from(merged.values())
+    .filter((row) => timestampInHardRange(row.source_timestamp, temporalIntent))
     .map((row) => {
       const vectorScore = Number(row.vector_score ?? 0);
       const textScore = Number(row.text_score ?? 0);
       const tokenScore = Number(row.token_score ?? 0);
-      const blended = Math.max(
+      const semanticScore = Math.max(
         0,
         Math.min(1, vectorScore * 0.55 + textScore * 0.3 + tokenScore * 0.15)
       );
+      const temporalScore = temporalRelevance(row.source_timestamp, temporalIntent);
+      const contextText = (contextById.get(row.id) ?? "").toLowerCase();
+      const contextHits = keywords.reduce((acc, token) => {
+        if (!token) return acc;
+        return hasToken(contextText, token) ? acc + 1 : acc;
+      }, 0);
+      const contextScore = Math.max(0, Math.min(1, contextHits / Math.max(1, keywords.length)));
+      const metadataScore = computeMetadataFacetScore(row, queryHints, temporalIntent);
+      const financeScore = computeFinanceSignal(row.content, contextText, row.source_system, intent, row.role);
+      const blended =
+        intent.kind === "finance_balance"
+          ? Math.max(0, Math.min(1, semanticScore * 0.32 + temporalScore * 0.18 + contextScore * 0.08 + financeScore * 0.32 + metadataScore * 0.1))
+          : intent.kind === "finance_general"
+            ? Math.max(0, Math.min(1, semanticScore * 0.45 + temporalScore * 0.2 + contextScore * 0.12 + financeScore * 0.13 + metadataScore * 0.1))
+            : Math.max(0, Math.min(1, semanticScore * 0.52 + temporalScore * 0.2 + contextScore * 0.12 + metadataScore * 0.16));
       return {
         ...row,
-        blended
+        blended,
+        financeScore,
+        metadataScore
       };
+    })
+    .filter((row) => {
+      if (intent.kind !== "finance_balance") return true;
+      if (!(row.financeScore >= 0.28 && isBalanceEvidenceCandidate(row.content))) return false;
+      if (!intent.personal) return true;
+      return isPersonalFinanceEvidenceCandidate(row.content, row.source_system, row.role);
     })
     .sort((a, b) => b.blended - a.blended)
     .slice(0, 10);
@@ -881,8 +1186,7 @@ function confidenceFromEvidence(evidence: EvidenceRef[]): ConfidenceScore {
 }
 
 function extractMoneyHints(text: string): string[] {
-  const matches = text.match(/\$?\d[\d,]*(?:\.\d{1,2})?/g) ?? [];
-  return Array.from(new Set(matches)).slice(0, 8);
+  return extractMoneyAmounts(text).slice(0, 8);
 }
 
 function summarizeAnswer(question: string, evidence: EvidenceRef[]): string {
@@ -890,9 +1194,11 @@ function summarizeAnswer(question: string, evidence: EvidenceRef[]): string {
     return "No reliable evidence found for this question in the selected timeframe. Try a broader timeframe or different wording.";
   }
 
-  const lowerQuestion = question.toLowerCase();
-  const isFinanceQuestion = /(money|net worth|balance|cash|income|savings|salary|expense)/.test(lowerQuestion);
-  if (isFinanceQuestion) {
+  const intent = detectQueryIntent(question);
+  if (intent.kind === "finance_balance") {
+    return summarizeFinanceBalance(evidence);
+  }
+  if (intent.kind === "finance_general") {
     const amounts = extractMoneyHints(evidence.map((e) => e.excerpt).join("\n"));
     if (amounts.length === 0) {
       return "I found finance-related messages, but no explicit balance/amount that can answer this directly. Evidence is listed below.";
@@ -914,7 +1220,7 @@ export async function runBrainQuery(input: BrainQueryRequest, privacyMode: Priva
   const confidence = confidenceFromEvidence(evidence);
   let answer = summarizeAnswer(question, evidence);
 
-  if (config.embeddingMode !== "openrouter") {
+  if (config.embeddingMode.toLowerCase() === "mock") {
     answer += "\n\nNote: semantic quality is limited while OPENBRAIN_EMBEDDING_MODE=mock.";
   }
 
@@ -1180,7 +1486,7 @@ export async function rebuildBrainJob(params: {
   const days = Number.isFinite(Number(params.days)) ? Math.max(1, Math.min(3650, Number(params.days))) : 90;
   const job = await pool.query<{ id: string }>(
     `INSERT INTO brain_jobs (job_type, status, requested_by, scope, started_at)
-     VALUES ('rebuild', 'running', $1, $2::jsonb, now())
+     VALUES ('rebuild', 'pending', $1, $2::jsonb, now())
      RETURNING id`,
     [params.requestedBy, JSON.stringify(params)]
   );
@@ -1190,6 +1496,17 @@ export async function rebuildBrainJob(params: {
   if (params.chatNamespace && !params.domain) {
     await clearDerivedStateForNamespace(params.chatNamespace);
   }
+
+  await pool.query(
+    `DELETE FROM brain_job_items i
+      USING brain_jobs j
+     WHERE i.job_id = j.id
+       AND j.job_type = 'rebuild'
+       AND j.id <> $1
+       AND j.status <> 'running'
+       AND i.status IN ('pending', 'running')`,
+    [jobId]
+  );
 
   const queued = await pool.query<{ inserted: string }>(
     `WITH source_rows AS (
@@ -1210,6 +1527,14 @@ export async function rebuildBrainJob(params: {
   );
 
   const inserted = Number(queued.rows[0]?.inserted ?? "0");
+  await pool.query(
+    `UPDATE brain_jobs
+        SET status = CASE WHEN $2::int > 0 THEN 'running' ELSE 'completed' END,
+            finished_at = CASE WHEN $2::int > 0 THEN NULL ELSE now() END,
+            updated_at = now()
+      WHERE id = $1`,
+    [jobId, inserted]
+  );
   return { ok: true, jobId, queued: inserted };
 }
 
