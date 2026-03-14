@@ -1091,6 +1091,16 @@ export function renderAppHtml(): string {
                       <div id="preloopAuthoringCounts" class="preloop-count-block">Authoring totals not loaded.</div>
                     </div>
                     <div class="preloop-filter-grid">
+                      <select id="preloopStatusFilter">
+                        <option value="pending">pending only</option>
+                        <option value="labeled">reviewed only</option>
+                        <option value="all">all items</option>
+                      </select>
+                      <select id="preloopVerdictFilter">
+                        <option value="">all verdicts</option>
+                        <option value="yes">yes</option>
+                        <option value="no">no</option>
+                      </select>
                       <select id="preloopDomainFilter">
                         <option value="">all domains</option>
                       </select>
@@ -1113,6 +1123,7 @@ export function renderAppHtml(): string {
                       <input id="preloopSampleCount" type="number" min="1" max="200" value="20" />
                     </div>
                     <button id="preloopGenerateSample" type="button" style="width:100%; margin-bottom:8px;">Generate Sample</button>
+                    <button id="preloopAutoReview" type="button" style="width:100%; margin-bottom:8px;">Generate AI Suggestions</button>
                     <div id="preloopQueueList" class="preloop-queue-list"></div>
                   </div>
                   <div class="preloop-card">
@@ -1153,6 +1164,10 @@ export function renderAppHtml(): string {
                   </div>
                   <div class="panel preloop-actions">
                     <h4>Decision</h4>
+                    <div class="preloop-section">
+                      <div class="preloop-section-title">AI suggestion</div>
+                      <div id="preloopSuggestedReview" class="muted">No AI suggestion yet.</div>
+                    </div>
                     <div class="preloop-decision-group">
                       <div class="preloop-section-title">Verdict</div>
                       <div class="preloop-button-row" id="preloopVerdictGroup">
@@ -1174,6 +1189,7 @@ export function renderAppHtml(): string {
                   </div>
                 </div>
                 <div class="preloop-bottom">
+                  <div id="preloopStageReadiness" class="muted" style="margin-bottom:8px;">Stage readiness: not loaded.</div>
                   <div id="preloopReadinessBar" class="muted">Readiness: not loaded.</div>
                 </div>
               </div>
@@ -1182,6 +1198,11 @@ export function renderAppHtml(): string {
                 <h3>Run Control</h3>
                 <div id="runControlSummary" class="muted">No experiment selected.</div>
                 <div class="runctl-actions" style="margin-top:8px;">
+                  <select id="runControlLockStage">
+                    <option value="core_ready">Core-ready lock</option>
+                    <option value="selection_ready">Selection-ready lock</option>
+                    <option value="certification_ready">Certification-ready lock</option>
+                  </select>
                   <button id="runControlLockBenchmark" type="button" disabled>Lock Benchmark</button>
                   <button id="runControlStartLoop" type="button" disabled>Start Loop</button>
                   <button id="runControlRunStep" type="button">Run Single Step</button>
@@ -1250,8 +1271,10 @@ export function renderAppHtml(): string {
 
   <script>
     (() => {
+      const SESSION_STORAGE_TOKEN_KEY = "openbrain.authToken";
       const state = {
         token: "",
+        sessionKeepaliveTimer: null,
         chatNamespace: "personal.main",
         privacyMode: "private",
         timeframe: "30d",
@@ -1285,9 +1308,20 @@ export function renderAppHtml(): string {
           queue: [],
           filteredQueue: [],
           selectedQueueIndex: -1,
+          selectedQueueItemId: "",
           activeReadiness: null,
+          activePreloopReport: null,
           verdict: "yes",
           ambiguityClass: "clear",
+          preloopDraft: {
+            itemId: "",
+            verdict: "yes",
+            ambiguityClass: "clear",
+            notes: "",
+            dirty: false
+          },
+          preloopLoadSeq: 0,
+          preloopSaving: false,
           loopRunning: false,
           frontierPoints: [],
           charts: {
@@ -1301,6 +1335,25 @@ export function renderAppHtml(): string {
           lineageGraph: null
         }
       };
+
+      function persistSessionToken() {
+        try {
+          if (state.token) {
+            window.sessionStorage.setItem(SESSION_STORAGE_TOKEN_KEY, state.token);
+          } else {
+            window.sessionStorage.removeItem(SESSION_STORAGE_TOKEN_KEY);
+          }
+        } catch {}
+      }
+
+      function restoreStoredSessionToken() {
+        try {
+          const stored = String(window.sessionStorage.getItem(SESSION_STORAGE_TOKEN_KEY) || "").trim();
+          return stored;
+        } catch {
+          return "";
+        }
+      }
 
       const byId = (id) => document.getElementById(id);
       const loginPage = byId("loginPage");
@@ -1318,6 +1371,26 @@ export function renderAppHtml(): string {
           .replaceAll(">", "&gt;");
       }
 
+      function clearSessionKeepalive() {
+        if (state.sessionKeepaliveTimer) {
+          clearInterval(state.sessionKeepaliveTimer);
+          state.sessionKeepaliveTimer = null;
+        }
+      }
+
+      function startSessionKeepalive() {
+        clearSessionKeepalive();
+        if (!state.token) return;
+        state.sessionKeepaliveTimer = setInterval(async () => {
+          if (document.hidden || !state.token) return;
+          try {
+            await api("/v1/auth/session", { method: "GET" });
+          } catch (error) {
+            console.error(error);
+          }
+        }, 240000);
+      }
+
       async function api(path, options = {}, requiresSession = true) {
         const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
         if (requiresSession && state.token) {
@@ -1326,6 +1399,29 @@ export function renderAppHtml(): string {
         const response = await fetch(path, { ...options, headers });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
+          if (requiresSession && response.status === 401) {
+            let sessionStillValid = false;
+            if (path !== "/v1/auth/session" && state.token) {
+              try {
+                const probe = await fetch("/v1/auth/session", {
+                  method: "GET",
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: "Bearer " + state.token
+                  }
+                });
+                sessionStillValid = probe.ok;
+              } catch {}
+            }
+            const message = payload.error || "Session expired. Please log in again.";
+            if (!sessionStillValid) {
+              clearEvolutionPolling();
+              clearSessionKeepalive();
+              loginError.textContent = message;
+              showLogin();
+            }
+            throw new Error(sessionStillValid ? (String(path) + ": " + message) : message);
+          }
           throw new Error(payload.error || ("HTTP " + response.status));
         }
         return payload;
@@ -1387,10 +1483,15 @@ export function renderAppHtml(): string {
       function showApp() {
         loginPage.style.display = "none";
         appPage.style.display = "block";
+        loginError.textContent = "";
+        persistSessionToken();
+        startSessionKeepalive();
       }
 
       function showLogin() {
         state.token = "";
+        persistSessionToken();
+        clearSessionKeepalive();
         loginPage.style.display = "grid";
         appPage.style.display = "none";
       }
@@ -2289,13 +2390,15 @@ export function renderAppHtml(): string {
       function startEvolutionPolling() {
         clearEvolutionPolling();
         if (state.module !== "evolution") return;
-        state.evolution.lightPollTimer = setInterval(() => {
-          if (document.hidden) return;
-          loadEvolutionLight().catch((err) => console.error(err));
-          if (state.evolutionTab === "preloop") {
-            loadPreloopQueueAndReadiness().catch((err) => console.error(err));
-          }
-        }, 5000);
+          state.evolution.lightPollTimer = setInterval(() => {
+            if (document.hidden) return;
+            loadEvolutionLight().catch((err) => console.error(err));
+            if (state.evolutionTab === "preloop") {
+              if (!state.evolution.preloopDraft?.dirty && !state.evolution.preloopSaving) {
+                loadPreloopQueueAndReadiness().catch((err) => console.error(err));
+              }
+            }
+          }, 5000);
         state.evolution.heavyPollTimer = setInterval(() => {
           if (document.hidden) return;
           if (state.evolutionTab === "overview") {
@@ -2323,20 +2426,34 @@ export function renderAppHtml(): string {
         const k = overviewPayload?.kpis || {};
         byId("evoKpiGrid").innerHTML = [
           evolutionKpiCard("Experiment", String(exp.name || exp.id || "n/a"), String(exp.status || "n/a")),
+          evolutionKpiCard("Benchmark Stage", String(exp.benchmarkStage || "draft")),
           evolutionKpiCard("Active Lock", String(exp.activeLockVersion || "none")),
           evolutionKpiCard("Current Variant", String(k.currentVariantId || "n/a")),
           evolutionKpiCard("Best Variant", String(k.bestVariantId || "n/a")),
-          evolutionKpiCard("Best Pass", (Number(k.bestPassRate || 0) * 100).toFixed(1) + "%"),
-          evolutionKpiCard("Clear Pass", (Number(k.clearPassRate || 0) * 100).toFixed(1) + "%"),
-          evolutionKpiCard("Clarify Pass", (Number(k.clarifyPassRate || 0) * 100).toFixed(1) + "%"),
+          evolutionKpiCard("Composite Score", (Number(k.compositeScore || 0) * 100).toFixed(1) + "%"),
+          evolutionKpiCard("Behavior Correct", (Number(k.behaviorCorrectRate || 0) * 100).toFixed(1) + "%"),
+          evolutionKpiCard("Grounding", (Number(k.groundingRate || 0) * 100).toFixed(1) + "%"),
+          evolutionKpiCard("False Confident", (Number(k.falseConfidentRate || 0) * 100).toFixed(2) + "%"),
+          evolutionKpiCard("Clear Behavior", (Number(k.clearBehaviorCorrectRate || 0) * 100).toFixed(1) + "%"),
+          evolutionKpiCard("Clarify Behavior", (Number(k.clarifyBehaviorCorrectRate || 0) * 100).toFixed(1) + "%"),
           evolutionKpiCard("Unresolved Debt", (Number(k.unresolvedAmbiguousRatio || 0) * 100).toFixed(2) + "%", k.unresolvedDebtPass ? "within limit" : "above limit"),
           evolutionKpiCard("Queue / Running", String(Number(k.queuedCount || 0)) + " / " + String(Number(k.runningCount || 0))),
           evolutionKpiCard("Completed / Failed", String(Number(k.completedCount || 0)) + " / " + String(Number(k.failedCount || 0))),
+          evolutionKpiCard("Provisional", exp.provisionalWinnerStatus ? "yes" : "no"),
+          evolutionKpiCard("Certified Winner", exp.certificationStatus ? "yes" : "no"),
           evolutionKpiCard("Authoring Accepted", String(Number(k.authoringAcceptedCount || 0))),
           evolutionKpiCard("Authoring Rejected", String(Number(k.authoringRejectedCount || 0))),
           evolutionKpiCard("Authoring Unresolved", String(Number(k.authoringUnresolvedCount || 0))),
           evolutionKpiCard("Verifier Pass", (Number(k.verifierPassRate || 0) * 100).toFixed(1) + "%"),
           evolutionKpiCard("Calibration Eligible", String(Number(k.calibrationEligibleCount || 0))),
+          evolutionKpiCard("Human Share", (Number(k.humanCaseShare || 0) * 100).toFixed(1) + "%"),
+          evolutionKpiCard("Assistant Share", (Number(k.assistantCaseShare || 0) * 100).toFixed(1) + "%"),
+          evolutionKpiCard("Direct 1:1", String(Number(k.direct1to1Coverage || 0))),
+          evolutionKpiCard("Group Chats", String(Number(k.groupChatCoverage || 0))),
+          evolutionKpiCard("3rd-Party", String(Number(k.thirdPartyCoverage || 0))),
+          evolutionKpiCard("Human Actors", String(Number(k.distinctHumanActors || 0))),
+          evolutionKpiCard("Human Groups", String(Number(k.distinctHumanGroups || 0))),
+          evolutionKpiCard("Families", String(Number(k.distinctConversationFamilies || 0))),
           evolutionKpiCard("Leakage Events", String(Number(k.leakageCount || 0))),
           evolutionKpiCard("Timeouts", String(Number(k.timeoutCount || 0)), "recoveries " + String(Number(k.timeoutRecoveries || 0)))
         ].join("");
@@ -2361,7 +2478,9 @@ export function renderAppHtml(): string {
               const d = params.data || {};
               return [
                 escapeHtml(String(d.variantId || "")),
-                "Pass: " + (Number(d.passRate || 0) * 100).toFixed(2) + "%",
+                "Behavior: " + (Number(d.behaviorCorrectRate || 0) * 100).toFixed(2) + "%",
+                "Grounding: " + (Number(d.groundingRate || 0) * 100).toFixed(2) + "%",
+                "Composite: " + (Number(d.compositeScore || 0) * 100).toFixed(2) + "%",
                 "Latency x: " + Number(d.latencyMultiplier || 0).toFixed(2),
                 "Cost x: " + Number(d.costMultiplier || 0).toFixed(2),
                 "Group: " + String(d.groupId || "n/a")
@@ -2369,13 +2488,13 @@ export function renderAppHtml(): string {
             }
           },
           xAxis: { type: "value", name: "Latency Multiplier", axisLabel: { color: "#9eb3cb" } },
-          yAxis: { type: "value", name: "Pass Rate", min: 0, max: 1, axisLabel: { color: "#9eb3cb" } },
+          yAxis: { type: "value", name: "Behavior Correct", min: 0, max: 1, axisLabel: { color: "#9eb3cb" } },
           grid: { left: 60, right: 20, top: 30, bottom: 40 },
           series: [{
             type: "scatter",
             symbolSize: 12,
             data: points.map((p) => ({
-              value: [Number(p.latencyMultiplier || 0), Number(p.passRate || 0)],
+              value: [Number(p.latencyMultiplier || 0), Number(p.behaviorCorrectRate || 0)],
               ...p,
               itemStyle: {
                 color: p.paretoLatency ? "#39d98a" : "#46c0ff"
@@ -2390,9 +2509,13 @@ export function renderAppHtml(): string {
             "<b>" + escapeHtml(String(d.variantId || "n/a")) + "</b><br/>"
             + "Strategy: " + escapeHtml(String(d.strategyId || "n/a")) + "<br/>"
             + "Status: " + escapeHtml(String(d.status || "n/a")) + "<br/>"
-            + "Pass: " + (Number(d.passRate || 0) * 100).toFixed(2) + "%<br/>"
+            + "Behavior: " + (Number(d.behaviorCorrectRate || 0) * 100).toFixed(2) + "%<br/>"
+            + "Grounding: " + (Number(d.groundingRate || 0) * 100).toFixed(2) + "%<br/>"
+            + "False confident: " + (Number(d.falseConfidentRate || 0) * 100).toFixed(2) + "%<br/>"
+            + "Composite: " + (Number(d.compositeScore || 0) * 100).toFixed(2) + "%<br/>"
             + "Latency P95: " + Number(d.latencyP95Ms || 0).toFixed(1) + " ms<br/>"
             + "Cost/1k: $" + Number(d.costPer1k || 0).toFixed(4) + "<br/>"
+            + "Decision layer: " + escapeHtml(String(d.decisionLayer || "exploratory")) + "<br/>"
             + "Pareto (latency): " + (d.paretoLatency ? "yes" : "no")
             + " | Pareto (cost): " + (d.paretoCost ? "yes" : "no");
         });
@@ -2600,7 +2723,10 @@ export function renderAppHtml(): string {
         renderTimeseries(timeseries);
         byId("runControlSummary").textContent =
           "Experiment " + String(overview?.experiment?.name || experimentId) + " | status " + String(overview?.experiment?.status || "n/a")
-          + " | lock " + String(overview?.experiment?.activeLockVersion || "none");
+          + " | stage " + String(overview?.experiment?.benchmarkStage || "draft")
+          + " | lock " + String(overview?.experiment?.activeLockVersion || "none")
+          + " | provisional " + (overview?.experiment?.provisionalWinnerStatus ? "yes" : "no")
+          + " | certified " + (overview?.experiment?.certificationStatus ? "yes" : "no");
       }
 
       async function loadEvolutionHeavy() {
@@ -2621,14 +2747,22 @@ export function renderAppHtml(): string {
       async function loadPreloopQueueAndReadiness() {
         const experimentId = await ensureEvolutionExperimentId(false);
         if (!experimentId) return;
+        const requestSeq = Number(state.evolution.preloopLoadSeq || 0) + 1;
+        state.evolution.preloopLoadSeq = requestSeq;
+        const statusFilter = String(byId("preloopStatusFilter").value || "pending");
+        const verdictFilter = String(byId("preloopVerdictFilter").value || "");
         const [pendingPayload, reportPayload, readinessPayload] = await Promise.all([
-          api("/v2/experiments/" + encodeURIComponent(experimentId) + "/calibration/pending?limit=200", { method: "GET" }),
+          api("/v2/experiments/" + encodeURIComponent(experimentId) + "/calibration/pending?limit=200&status=" + encodeURIComponent(statusFilter) + "&verdict=" + encodeURIComponent(verdictFilter), { method: "GET" }),
           api("/v2/experiments/" + encodeURIComponent(experimentId) + "/calibration/report", { method: "GET" }),
           api("/v2/experiments/" + encodeURIComponent(experimentId) + "/preloop/readiness", { method: "GET" })
         ]);
-        const queue = Array.isArray(pendingPayload?.pending) ? pendingPayload.pending : [];
+        if (requestSeq !== Number(state.evolution.preloopLoadSeq || 0)) {
+          return;
+        }
+        const queue = Array.isArray(pendingPayload?.items) ? pendingPayload.items : [];
         state.evolution.queue = queue;
         state.evolution.activeReadiness = readinessPayload;
+        state.evolution.activePreloopReport = reportPayload;
         const domains = Array.from(new Set(queue.map((item) => String(item.domain || "")).filter(Boolean))).sort();
         const currentDomain = String(byId("preloopDomainFilter").value || "");
         byId("preloopDomainFilter").innerHTML =
@@ -2649,6 +2783,13 @@ export function renderAppHtml(): string {
           + "Coverage: broader domain coverage checks.";
         renderPreloopQueue();
         renderPreloopReadiness(readinessPayload, reportPayload);
+      }
+
+      function selectedLockStageKey() {
+        const raw = byId("runControlLockStage")
+          ? String(byId("runControlLockStage").value || "core_ready")
+          : "core_ready";
+        return raw === "selection_ready" || raw === "certification_ready" ? raw : "core_ready";
       }
 
       function currentFilteredQueue() {
@@ -2672,25 +2813,54 @@ export function renderAppHtml(): string {
         });
       }
 
+      function resetPreloopDraft(item) {
+        const draft = state.evolution.preloopDraft;
+        draft.itemId = String(item?.calibrationItemId || "");
+        draft.verdict = String(item?.reviewVerdict || item?.assistantSuggestion?.verdict || "yes");
+        draft.ambiguityClass = String(item?.assistantSuggestion?.ambiguityClass || item?.ambiguityClass || "clear");
+        draft.notes = String(item?.reviewNotes || item?.assistantSuggestion?.notes || "");
+        draft.dirty = false;
+        state.evolution.verdict = draft.verdict;
+        state.evolution.ambiguityClass = draft.ambiguityClass;
+      }
+
+      function applyPreloopDraftToControls() {
+        const draft = state.evolution.preloopDraft;
+        state.evolution.verdict = String(draft.verdict || "yes");
+        state.evolution.ambiguityClass = String(draft.ambiguityClass || "clear");
+        setPreloopButtonGroup("preloopVerdictGroup", state.evolution.verdict);
+        setPreloopButtonGroup("preloopAmbiguityGroup", state.evolution.ambiguityClass);
+        byId("preloopNotes").value = String(draft.notes || "");
+      }
+
       function renderPreloopQueue() {
         const filtered = currentFilteredQueue();
         if (filtered.length === 0) {
           state.evolution.selectedQueueIndex = -1;
-          byId("preloopQueueList").innerHTML = '<div class="muted">No pending items in this filter.</div>';
+          state.evolution.selectedQueueItemId = "";
+          byId("preloopQueueList").innerHTML = '<div class="muted">No calibration items in this filter.</div>';
           renderPreloopSelectedCase(null);
           return;
         }
-        if (state.evolution.selectedQueueIndex < 0 || state.evolution.selectedQueueIndex >= filtered.length) {
+        const selectedItemId = String(state.evolution.selectedQueueItemId || "");
+        const selectedItemIndex = selectedItemId
+          ? filtered.findIndex((item) => String(item?.calibrationItemId || "") === selectedItemId)
+          : -1;
+        if (selectedItemIndex >= 0) {
+          state.evolution.selectedQueueIndex = selectedItemIndex;
+        } else if (state.evolution.selectedQueueIndex < 0 || state.evolution.selectedQueueIndex >= filtered.length) {
           state.evolution.selectedQueueIndex = 0;
         }
+        state.evolution.selectedQueueItemId = String(filtered[state.evolution.selectedQueueIndex]?.calibrationItemId || "");
         byId("preloopQueueList").innerHTML = filtered.map((item, idx) => {
-          const active = idx === state.evolution.selectedQueueIndex ? " active" : "";
+          const active = String(item?.calibrationItemId || "") === String(state.evolution.selectedQueueItemId || "") ? " active" : "";
+          const itemStatus = String(item?.itemStatus || "pending");
           const ambiguity = String(item?.ambiguityClass || "n/a");
           const owner = String(item?.ownerValidationState || "n/a");
           const preview = String(item.question || "").slice(0, 90);
           return '<div class="preloop-item' + active + '" data-preloop-index="' + idx + '">'
             + '<div><b>' + escapeHtml(String(item.domain || "case").replaceAll("_", " ")) + "</b></div>"
-            + '<div class="muted">' + escapeHtml(String(item.caseSet || "n/a") + " | " + ambiguity + " | " + owner) + "</div>"
+            + '<div class="muted">' + escapeHtml(String(item.caseSet || "n/a") + " | " + itemStatus + " | " + ambiguity + " | " + owner) + "</div>"
             + '<div>' + escapeHtml(preview) + "</div>"
             + "</div>";
         }).join("");
@@ -2698,6 +2868,7 @@ export function renderAppHtml(): string {
           el.addEventListener("click", () => {
             const idx = Number(el.dataset.preloopIndex || "0");
             state.evolution.selectedQueueIndex = Number.isFinite(idx) ? idx : 0;
+            state.evolution.selectedQueueItemId = String(filtered[state.evolution.selectedQueueIndex]?.calibrationItemId || "");
             renderPreloopQueue();
           });
         });
@@ -2706,7 +2877,9 @@ export function renderAppHtml(): string {
 
       function renderPreloopSelectedCase(item) {
         if (!item) {
-          const emptyText = '<div class="muted">No pending item in this filter. Change filters or generate a new sample.</div>';
+          const emptyText = '<div class="muted">No calibration item in this filter. Change filters or load a different review mode.</div>';
+          resetPreloopDraft(null);
+          applyPreloopDraftToControls();
           byId("preloopCaseMeta").textContent = "No case selected.";
           byId("preloopQuestionText").innerHTML = emptyText;
           byId("preloopExpectedBehavior").innerHTML = '<div class="muted">Nothing to review yet.</div>';
@@ -2716,7 +2889,11 @@ export function renderAppHtml(): string {
           byId("preloopEvidencePreview").innerHTML = emptyText;
           byId("preloopAdmission").innerHTML = emptyText;
           byId("preloopQualityGate").innerHTML = emptyText;
+          byId("preloopSuggestedReview").innerHTML = emptyText;
           return;
+        }
+        if (String(state.evolution.preloopDraft.itemId || "") !== String(item.calibrationItemId || "")) {
+          resetPreloopDraft(item);
         }
         byId("preloopCaseMeta").textContent =
           "Case " + String(item.caseId || "n/a")
@@ -2771,7 +2948,7 @@ export function renderAppHtml(): string {
             + '<div><b>' + escapeHtml(String(ev.actorName || ev.sourceSystem || "unknown")) + '</b></div>'
             + '<div class="muted">' + escapeHtml(String(ev.sourceSystem || "n/a")) + ' | ' + escapeHtml(fmtDate(ev.observedAt)) + '</div>'
             + '<div class="muted" style="margin-top:4px;">' + escapeHtml(String(ev.evidenceId || "")) + '</div>'
-            + '<div style="margin-top:6px;">' + escapeHtml(String(ev.snippet || "")) + '</div>'
+            + '<div style="margin-top:6px; white-space:pre-wrap; overflow-wrap:anywhere;">' + escapeHtml(String(ev.snippet || "")) + '</div>'
             + '</div>'
           )).join("");
         const admission = item.admissionDecision || {};
@@ -2812,10 +2989,16 @@ export function renderAppHtml(): string {
             : (Array.isArray(critique?.reasons) && critique.reasons.length > 0
               ? '<div style="margin-top:6px;">' + escapeHtml(critique.reasons.join(" | ")) + '</div>'
               : ""));
-        state.evolution.verdict = "yes";
-        state.evolution.ambiguityClass = String(item?.ambiguityClass || "clear");
-        setPreloopButtonGroup("preloopVerdictGroup", state.evolution.verdict);
-        setPreloopButtonGroup("preloopAmbiguityGroup", state.evolution.ambiguityClass);
+        const suggestion = item.assistantSuggestion || null;
+        byId("preloopSuggestedReview").innerHTML = suggestion
+          ? (
+            '<div><b>Verdict:</b> ' + escapeHtml(String(suggestion.verdict || "n/a"))
+            + ' | <b>Ambiguity:</b> ' + escapeHtml(String(suggestion.ambiguityClass || item.ambiguityClass || "clear").replaceAll("_", " "))
+            + ' | <b>Confidence:</b> ' + escapeHtml(Number(suggestion.confidence || 0).toFixed(2)) + '</div>'
+            + (suggestion.notes ? '<div style="margin-top:6px;">' + escapeHtml(String(suggestion.notes || "")) + '</div>' : "")
+          )
+          : '<div class="muted">No AI suggestion yet.</div>';
+        applyPreloopDraftToControls();
       }
 
       function renderPreloopReadiness(readinessPayload, reportPayload) {
@@ -2825,9 +3008,12 @@ export function renderAppHtml(): string {
         const datasetCounts = readinessPayload?.datasetCounts || {};
         const authoringCounts = readinessPayload?.authoringCounts || {};
         const lockCounts = readinessPayload?.lockEligibilityCounts || {};
+        const stageReadiness = readinessPayload?.stageReadiness || {};
+        const benchmarkStage = String(readinessPayload?.benchmarkStage || "draft");
         const statusCounts = reportPayload?.statusCounts || {};
         const verdictCounts = reportPayload?.verdictCounts || {};
-        const lockReady = Boolean(gates.readyForLock);
+        const selectedStage = selectedLockStageKey();
+        const lockReady = Boolean(stageReadiness?.[selectedStage]?.pass);
         const startReady = Boolean(gates.readyForStart);
         byId("preloopQueueCounts").innerHTML =
           "<b>Queue now</b><br/>"
@@ -2845,15 +3031,56 @@ export function renderAppHtml(): string {
           + "Accepted " + Number(authoringCounts.accepted || 0)
           + " | Rejected " + Number(authoringCounts.rejected || 0)
           + " | Unresolved " + Number(authoringCounts.unresolved || 0);
+        const stageLabels = [
+          ["core_ready", "Core"],
+          ["selection_ready", "Selection"],
+          ["certification_ready", "Certification"]
+        ];
+        byId("preloopStageReadiness").innerHTML = stageLabels.map(([key, label]) => {
+          const item = stageReadiness?.[key] || {};
+          const blockers = Array.isArray(item.blockers) && item.blockers.length > 0
+            ? " | " + escapeHtml(item.blockers.join(" ; "))
+            : "";
+          return "<div><b>" + label + ":</b> " + (item.pass ? "ready" : "blocked") + blockers + "</div>";
+        }).join("")
+          + '<div style="margin-top:6px;"><b>Reviewed:</b> '
+          + Number(lockCounts.ownerReviewedTotal || 0)
+          + " | <b>Yes:</b> " + Number(lockCounts.ownerApprovedYes || 0)
+          + " | <b>No:</b> " + Number(lockCounts.ownerRejectedNo || 0)
+          + " | <b>Clarify:</b> " + Number(lockCounts.reviewedClarify || 0)
+          + " | <b>Domains:</b> " + Number(lockCounts.approvedDomainCoverage || 0)
+          + " | <b>Lenses:</b> " + Number(lockCounts.approvedLensCoverage || 0)
+          + " | <b>Actors:</b> " + Number(lockCounts.approvedActorCoverage || 0)
+          + " | <b>Groups:</b> " + Number(lockCounts.approvedGroupCoverage || 0)
+          + " | <b>Threads:</b> " + Number(lockCounts.approvedThreadCoverage || 0)
+          + " | <b>Sources:</b> " + Number(lockCounts.approvedSourceCoverage || 0)
+          + " | <b>Time:</b> " + Number(lockCounts.approvedTimeCoverage || 0)
+          + " | <b>Human:</b> " + (Number(lockCounts.approvedHumanCaseShare || 0) * 100).toFixed(1) + "%"
+          + " | <b>Assistant:</b> " + (Number(lockCounts.approvedAssistantCaseShare || 0) * 100).toFixed(1) + "%"
+          + " | <b>1:1:</b> " + Number(lockCounts.approvedDirect1to1Coverage || 0)
+          + " | <b>Groups:</b> " + Number(lockCounts.approvedGroupChatCoverage || 0)
+          + " | <b>3rd-party:</b> " + Number(lockCounts.approvedThirdPartyCoverage || 0)
+          + " | <b>Human actors:</b> " + Number(lockCounts.approvedDistinctHumanActors || 0)
+          + " | <b>Human groups:</b> " + Number(lockCounts.approvedDistinctHumanGroups || 0)
+          + " | <b>Families:</b> " + Number(lockCounts.approvedDistinctConversationFamilies || 0)
+          + " | <b>Critical:</b> " + Number(lockCounts.criticalReviewedSlice || 0)
+          + "</div>";
         byId("preloopReadinessBar").innerHTML =
-          "Clear " + (Number(metrics.clearPassRate || 0) * 100).toFixed(2) + "% (target 99%)"
-          + " | Clarify " + (Number(metrics.clarifyPassRate || 0) * 100).toFixed(2) + "% (target 99%)"
-          + " | Debt " + (Number(metrics.unresolvedAmbiguousRatio || 0) * 100).toFixed(2) + "% (max 1%)"
+          "Stage " + escapeHtml(benchmarkStage)
+          + " | Clear " + (Number(metrics.clearPassRate || 0) * 100).toFixed(2) + "%"
+          + " | Clarify " + (Number(metrics.clarifyPassRate || 0) * 100).toFixed(2) + "%"
+          + " | Debt " + (Number(metrics.unresolvedAmbiguousRatio || 0) * 100).toFixed(2) + "%"
           + " | Verifier " + (Number(metrics.verifierPassRate || 0) * 100).toFixed(2) + "%"
+          + " | Human " + (Number(metrics.humanCaseShare || 0) * 100).toFixed(1) + "%"
+          + " | Assistant " + (Number(metrics.assistantCaseShare || 0) * 100).toFixed(1) + "%"
+          + " | 1:1 " + Number(metrics.direct1to1Coverage || 0)
+          + " | Groups " + Number(metrics.groupChatCoverage || 0)
+          + " | 3rd-party " + Number(metrics.thirdPartyCoverage || 0)
           + " | calibration eligible " + Number(lockCounts.calibrationEligible || 0)
           + " | pending owner " + Number(lockCounts.pendingOwner || 0)
           + " | pending queue " + Number(statusCounts.pending || 0)
-          + " | labels yes/no " + Number(verdictCounts.yes || 0) + "/" + Number(verdictCounts.no || 0);
+          + " | labels yes/no " + Number(verdictCounts.yes || 0) + "/" + Number(verdictCounts.no || 0)
+          + " | lock target " + escapeHtml(selectedStage);
         byId("runControlLockBenchmark").disabled = !lockReady;
         byId("runControlStartLoop").disabled = !startReady;
       }
@@ -2866,24 +3093,51 @@ export function renderAppHtml(): string {
           byId("preloopActionMsg").textContent = "No item selected.";
           return;
         }
+        if (state.evolution.preloopSaving) {
+          return;
+        }
         const experimentId = await ensureEvolutionExperimentId(false);
+        const draft = state.evolution.preloopDraft;
         const payload = {
           calibrationItemId: String(item.calibrationItemId || ""),
-          verdict: String(state.evolution.verdict || "yes"),
-          ambiguityClass: String(state.evolution.ambiguityClass || "clear"),
-          notes: String(byId("preloopNotes").value || "").trim() || undefined
+          verdict: String(draft.verdict || state.evolution.verdict || "yes"),
+          ambiguityClass: String(draft.ambiguityClass || state.evolution.ambiguityClass || "clear"),
+          notes: String(draft.notes || byId("preloopNotes").value || "").trim() || undefined
         };
-        await api("/v2/experiments/" + encodeURIComponent(experimentId) + "/calibration/label", {
-          method: "POST",
-          body: JSON.stringify(payload)
-        });
-        byId("preloopNotes").value = "";
-        byId("preloopActionMsg").textContent = "Saved " + payload.calibrationItemId + ".";
-        const nextIdx = idx;
-        await loadPreloopQueueAndReadiness();
-        if (state.evolution.filteredQueue.length > 0) {
-          state.evolution.selectedQueueIndex = Math.min(nextIdx, state.evolution.filteredQueue.length - 1);
-          renderPreloopQueue();
+        const saveButton = byId("preloopSaveNext");
+        state.evolution.preloopSaving = true;
+        saveButton.disabled = true;
+        try {
+          await api("/v2/experiments/" + encodeURIComponent(experimentId) + "/calibration/label", {
+            method: "POST",
+            body: JSON.stringify(payload)
+          });
+          draft.dirty = false;
+          draft.notes = "";
+          byId("preloopActionMsg").textContent = "Saved " + payload.calibrationItemId + ".";
+          const nextItemId = idx >= 0 && idx < filtered.length - 1
+            ? String(filtered[idx + 1]?.calibrationItemId || "")
+            : "";
+          await loadPreloopQueueAndReadiness();
+          if (state.evolution.filteredQueue.length > 0) {
+            const nextIdx = nextItemId
+              ? state.evolution.filteredQueue.findIndex((candidate) => String(candidate?.calibrationItemId || "") === nextItemId)
+              : -1;
+            state.evolution.selectedQueueIndex = nextIdx >= 0
+              ? nextIdx
+              : Math.min(idx, state.evolution.filteredQueue.length - 1);
+            state.evolution.selectedQueueItemId = String(state.evolution.filteredQueue[state.evolution.selectedQueueIndex]?.calibrationItemId || "");
+            renderPreloopQueue();
+          } else {
+            state.evolution.selectedQueueItemId = "";
+            renderPreloopQueue();
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          byId("preloopActionMsg").textContent = "Save/refresh failed: " + message;
+        } finally {
+          state.evolution.preloopSaving = false;
+          saveButton.disabled = false;
         }
       }
 
@@ -2904,11 +3158,34 @@ export function renderAppHtml(): string {
         await loadPreloopQueueAndReadiness();
       }
 
+      async function generatePreloopAiSuggestions() {
+        const experimentId = await ensureEvolutionExperimentId(false);
+        const status = String(byId("preloopStatusFilter").value || "pending");
+        const domain = String(byId("preloopDomainFilter").value || "").trim();
+        const caseSet = String(byId("preloopCaseSetFilter").value || "").trim();
+        byId("preloopActionMsg").textContent = "Generating AI suggestions...";
+        const payload = await api("/v2/experiments/" + encodeURIComponent(experimentId) + "/calibration/auto_review", {
+          method: "POST",
+          body: JSON.stringify({
+            limit: 500,
+            batchSize: 5,
+            status,
+            domain: domain || undefined,
+            caseSet: caseSet || undefined
+          })
+        });
+        byId("preloopActionMsg").textContent =
+          "AI suggestions generated for " + Number(payload?.reviewed || 0) + " item(s); materialized " + Number(payload?.materialized || 0) + " new calibration item(s).";
+        await loadPreloopQueueAndReadiness();
+      }
+
       async function preloopLockBenchmark() {
         const experimentId = await ensureEvolutionExperimentId(false);
         await api("/v2/experiments/" + encodeURIComponent(experimentId) + "/benchmark/lock", {
           method: "POST",
-          body: JSON.stringify({})
+          body: JSON.stringify({
+            lockStage: String(byId("runControlLockStage").value || "core_ready")
+          })
         });
         byId("preloopActionMsg").textContent = "Benchmark locked.";
         await loadPreloopQueueAndReadiness();
@@ -2981,10 +3258,20 @@ export function renderAppHtml(): string {
 
       async function refreshEvolutionModule(full = true) {
         await loadEvolutionExperimentList(false);
+        if (state.evolutionTab === "overview") {
+          await loadEvolutionLight();
+          await loadEvolutionHeavy();
+          return;
+        }
+        if (state.evolutionTab === "preloop") {
+          await loadPreloopQueueAndReadiness();
+          return;
+        }
+        if (state.evolutionTab === "ontology") {
+          await loadOntologyReview(false);
+          return;
+        }
         await loadEvolutionLight();
-        if (full || state.evolutionTab === "overview") await loadEvolutionHeavy();
-        await loadPreloopQueueAndReadiness();
-        if (full || state.evolutionTab === "ontology") await loadOntologyReview(false);
       }
 
       async function refreshModuleData(moduleName) {
@@ -3214,32 +3501,64 @@ export function renderAppHtml(): string {
         await loadOntologyReview(false);
         setOntologyActionMsg("Deferred " + ids.length + " visible candidates.");
       });
+      byId("preloopStatusFilter").addEventListener("change", async () => {
+        state.evolution.selectedQueueIndex = 0;
+        state.evolution.selectedQueueItemId = "";
+        state.evolution.preloopDraft.dirty = false;
+        await loadPreloopQueueAndReadiness();
+      });
+      byId("preloopVerdictFilter").addEventListener("change", async () => {
+        state.evolution.selectedQueueIndex = 0;
+        state.evolution.selectedQueueItemId = "";
+        state.evolution.preloopDraft.dirty = false;
+        await loadPreloopQueueAndReadiness();
+      });
       ["preloopDomainFilter", "preloopAmbiguityFilter", "preloopCaseSetFilter"].forEach((id) => {
         byId(id).addEventListener("change", () => {
           state.evolution.selectedQueueIndex = 0;
+          state.evolution.selectedQueueItemId = "";
           renderPreloopQueue();
         });
       });
       ["preloopVerdictYes", "preloopVerdictNo"].forEach((id) => {
         byId(id).addEventListener("click", (event) => {
-          state.evolution.verdict = String(event.currentTarget.dataset.value || "yes");
-          setPreloopButtonGroup("preloopVerdictGroup", state.evolution.verdict);
+          const draft = state.evolution.preloopDraft;
+          draft.verdict = String(event.currentTarget.dataset.value || "yes");
+          draft.dirty = true;
+          state.evolution.verdict = draft.verdict;
+          setPreloopButtonGroup("preloopVerdictGroup", draft.verdict);
         });
       });
       ["preloopAmbiguityClear", "preloopAmbiguityClarify", "preloopAmbiguityUnresolved"].forEach((id) => {
         byId(id).addEventListener("click", (event) => {
-          state.evolution.ambiguityClass = String(event.currentTarget.dataset.value || "clear");
-          setPreloopButtonGroup("preloopAmbiguityGroup", state.evolution.ambiguityClass);
+          const draft = state.evolution.preloopDraft;
+          draft.ambiguityClass = String(event.currentTarget.dataset.value || "clear");
+          draft.dirty = true;
+          state.evolution.ambiguityClass = draft.ambiguityClass;
+          setPreloopButtonGroup("preloopAmbiguityGroup", draft.ambiguityClass);
         });
+      });
+      byId("preloopNotes").addEventListener("input", (event) => {
+        const draft = state.evolution.preloopDraft;
+        draft.notes = String(event.target.value || "");
+        draft.dirty = true;
       });
       byId("preloopGenerateSample").addEventListener("click", async () => {
         await generatePreloopSample();
+      });
+      byId("preloopAutoReview").addEventListener("click", async () => {
+        await generatePreloopAiSuggestions();
       });
       byId("preloopSaveNext").addEventListener("click", async () => {
         await submitPreloopDecisionSaveNext();
       });
       byId("runControlLockBenchmark").addEventListener("click", async () => {
         await preloopLockBenchmark();
+      });
+      byId("runControlLockStage").addEventListener("change", () => {
+        if (state.evolution.activeReadiness) {
+          renderPreloopReadiness(state.evolution.activeReadiness, state.evolution.activePreloopReport || {});
+        }
       });
       byId("runControlStartLoop").addEventListener("click", async () => {
         await runControlLoopStart();
@@ -3385,6 +3704,20 @@ export function renderAppHtml(): string {
 
       window.addEventListener("resize", () => resizeVisuals());
       syncAskInputMode();
+
+      const restoredToken = restoreStoredSessionToken();
+      if (restoredToken) {
+        state.token = restoredToken;
+        showApp();
+        api("/v1/auth/session", { method: "GET" })
+          .then(() => loadPrivacyMode())
+          .then(() => refreshModuleData("brief"))
+          .then(() => ensureEvolutionExperimentId(true).catch(() => ""))
+          .catch((error) => {
+            loginError.textContent = error?.message || "Session expired. Please log in again.";
+            showLogin();
+          });
+      }
     })();
   </script>
 </body>

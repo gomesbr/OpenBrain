@@ -49,6 +49,7 @@ import {
   experimentLineage,
   experimentPreloopReadiness,
   createJudgeCalibrationSample,
+  autoReviewJudgeCalibration,
   generateTaxonomyCandidates,
   judgeCalibrationReport,
   listJudgeCalibrationPending,
@@ -258,7 +259,11 @@ const v2ExperimentStartSchema = z.object({
   datasetVersion: z.string().optional(),
   strategyIds: z.array(z.string()).optional(),
   maxCasesPerPair: z.number().int().min(1).max(4).optional(),
-  taxonomyVersionId: z.string().optional()
+  taxonomyVersionId: z.string().optional(),
+  selectionProfileId: z.string().optional(),
+  selectionProfile: z.record(z.unknown()).optional(),
+  certificationProfile: z.record(z.unknown()).optional(),
+  readinessProfile: z.record(z.unknown()).optional()
 });
 
 const v2ExperimentStepSchema = z.object({
@@ -268,7 +273,8 @@ const v2ExperimentStepSchema = z.object({
 });
 
 const v2ExperimentBenchmarkLockSchema = z.object({
-  lockVersion: z.string().optional()
+  lockVersion: z.string().optional(),
+  lockStage: z.enum(["core_ready", "selection_ready", "certification_ready"])
 });
 
 const v2TaxonomyScanSchema = z.object({
@@ -438,11 +444,19 @@ async function main(): Promise<void> {
 
   app.get("/", (_req, res) => {
     res.setHeader("content-type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    res.setHeader("Surrogate-Control", "no-store");
     res.send(renderAppHtml());
   });
 
   app.get("/app", (_req, res) => {
     res.setHeader("content-type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    res.setHeader("Surrogate-Control", "no-store");
     res.send(renderAppHtml());
   });
 
@@ -1204,7 +1218,7 @@ async function main(): Promise<void> {
       res.locals.v2Principal = principal;
       res.locals.v2Operation = "experiment.start";
       const payload = v2ExperimentStartSchema.parse(req.body);
-      const result = await startExperiment(payload);
+      const result = await startExperiment(payload as Parameters<typeof startExperiment>[0]);
       res.locals.v2Response = result as Record<string, unknown>;
       res.json(result);
     } catch (error) {
@@ -1499,7 +1513,8 @@ async function main(): Promise<void> {
       const payload = v2ExperimentBenchmarkLockSchema.parse(req.body ?? {});
       const result = await lockExperimentBenchmark({
         experimentId: String(req.params.id ?? "").trim(),
-        lockVersion: payload.lockVersion
+        lockVersion: payload.lockVersion,
+        lockStage: payload.lockStage
       });
       res.locals.v2Response = result as Record<string, unknown>;
       res.json(result);
@@ -2148,7 +2163,9 @@ async function main(): Promise<void> {
       res.locals.v2Operation = "experiment.calibration.pending";
       const result = await listJudgeCalibrationPending({
         experimentId: String(req.params.id ?? "").trim(),
-        limit: req.query.limit != null ? Number(req.query.limit) : undefined
+        limit: req.query.limit != null ? Number(req.query.limit) : undefined,
+        status: req.query.status != null ? String(req.query.status).trim().toLowerCase() as "pending" | "labeled" | "all" : undefined,
+        verdict: req.query.verdict != null ? String(req.query.verdict).trim().toLowerCase() as "yes" | "no" : undefined
       });
       res.locals.v2Response = result as Record<string, unknown>;
       res.json(result);
@@ -2190,6 +2207,38 @@ async function main(): Promise<void> {
         reviewer: String(body.reviewer ?? "owner").trim() || "owner",
         notes: String(body.notes ?? "").trim() || undefined
       });
+      res.locals.v2Response = result as Record<string, unknown>;
+      res.json(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.locals.v2Error = message;
+      res.status(400).json({ ok: false, error: message });
+    }
+  });
+
+  app.post("/v2/experiments/:id/calibration/auto_review", async (req: Request, res: Response) => {
+    try {
+      ensureV2Enabled();
+      if (!config.v2BenchmarkMode) {
+        throw new Error("OPENBRAIN_V2_BENCHMARK_MODE is disabled.");
+      }
+      const principal = await resolveV2Principal(req, {
+        allowExternalService: false,
+        domain: "benchmark",
+        operation: "experiment_calibration_auto_review"
+      });
+      res.locals.v2Principal = principal;
+      res.locals.v2Operation = "experiment.calibration.auto_review";
+      const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+        const result = await autoReviewJudgeCalibration({
+          experimentId: String(req.params.id ?? "").trim(),
+          limit: body.limit != null ? Number(body.limit) : undefined,
+          batchSize: body.batchSize != null ? Number(body.batchSize) : undefined,
+          status: body.status != null ? String(body.status).trim().toLowerCase() as "pending" | "labeled" | "all" : undefined,
+          domain: body.domain != null ? String(body.domain).trim() || undefined : undefined,
+          caseSet: body.caseSet != null ? String(body.caseSet).trim() as "dev" | "critical" | "certification" | "stress" | "coverage" : undefined,
+          refreshExisting: body.refreshExisting === true
+        });
       res.locals.v2Response = result as Record<string, unknown>;
       res.json(result);
     } catch (error) {

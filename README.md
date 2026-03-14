@@ -166,7 +166,6 @@ Notes:
 ## 6) Runtime modes
 
 - `OPENBRAIN_EMBEDDING_MODE=mock` (default): deterministic embeddings, no external keys needed.
-- `OPENBRAIN_EMBEDDING_MODE=openrouter`: real embeddings + metadata extraction via OpenRouter (`OPENROUTER_API_KEY` required).
 - `OPENBRAIN_EMBEDDING_MODE=openai`: real embeddings + metadata extraction via OpenAI (`OPENAI_API_KEY` required).
 
 V2 runtime flags:

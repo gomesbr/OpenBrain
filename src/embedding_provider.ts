@@ -2,12 +2,7 @@ import { createHash } from "node:crypto";
 import { config } from "./config.js";
 
 const OPENAI_BASE = "https://api.openai.com/v1";
-const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const EMBEDDING_DIM = 1536;
-
-function shouldFallbackToMock(): boolean {
-  return config.embeddingFallbackMode.toLowerCase() !== "error";
-}
 
 function hashToUnitFloat(input: string): number {
   const hash = createHash("sha256").update(input).digest();
@@ -26,12 +21,9 @@ function normalizeBaseUrl(value: string, fallback: string): string {
   return base.replace(/\/+$/, "");
 }
 
-function resolveModelForProvider(provider: "openai" | "openrouter", model: string): string {
+function resolveOpenAiEmbeddingModel(model: string): string {
   const trimmed = String(model ?? "").trim();
-  if (provider === "openai") {
-    return trimmed.replace(/^openai\//i, "") || "text-embedding-3-small";
-  }
-  return trimmed || "openai/text-embedding-3-small";
+  return trimmed.replace(/^openai\//i, "") || "text-embedding-3-small";
 }
 
 async function requestEmbedding(params: {
@@ -106,44 +98,17 @@ export async function getEmbedding(text: string): Promise<number[]> {
 
   if (mode === "openai") {
     if (!config.openAiApiKey) {
-      if (shouldFallbackToMock()) return createMockEmbedding(text);
       throw new Error("OPENAI_API_KEY is required for openai embedding mode");
     }
 
-    try {
-      return await requestEmbedding({
-        providerLabel: "OpenAI",
-        baseUrl: normalizeBaseUrl(config.openAiBaseUrl, OPENAI_BASE),
-        apiKey: config.openAiApiKey,
-        model: resolveModelForProvider("openai", config.embeddingModel),
-        text,
-        timeoutMs: config.requestTimeoutMs
-      });
-    } catch (error) {
-      if (shouldFallbackToMock()) return createMockEmbedding(text);
-      throw error;
-    }
-  }
-
-  if (mode === "openrouter") {
-    if (!config.openRouterApiKey) {
-      if (shouldFallbackToMock()) return createMockEmbedding(text);
-      throw new Error("OPENROUTER_API_KEY is required for openrouter embedding mode");
-    }
-
-    try {
-      return await requestEmbedding({
-        providerLabel: "OpenRouter",
-        baseUrl: OPENROUTER_BASE,
-        apiKey: config.openRouterApiKey,
-        model: resolveModelForProvider("openrouter", config.embeddingModel),
-        text,
-        timeoutMs: config.requestTimeoutMs
-      });
-    } catch (error) {
-      if (shouldFallbackToMock()) return createMockEmbedding(text);
-      throw error;
-    }
+    return requestEmbedding({
+      providerLabel: "OpenAI",
+      baseUrl: normalizeBaseUrl(config.openAiBaseUrl, OPENAI_BASE),
+      apiKey: config.openAiApiKey,
+      model: resolveOpenAiEmbeddingModel(config.embeddingModel),
+      text,
+      timeoutMs: config.requestTimeoutMs
+    });
   }
 
   throw new Error(`Unsupported OPENBRAIN_EMBEDDING_MODE: ${config.embeddingMode}`);

@@ -14,11 +14,33 @@ interface ApplyStats {
   mergedCanonicalMessages: number;
   mergedEvidenceLinks: number;
   mergedAliases: number;
+  mergedActorContexts: number;
+  mergedActorSourceProfiles: number;
   deletedActorsFromMerge: number;
   deletedActorsByList: number;
   deletedAliasesByList: number;
   deletedMemoryItemsByList: number;
   renamedActors: number;
+}
+
+function cleanDisplayName(value: string): string {
+  return String(value ?? "")
+    .replace(/^\uFEFF/, "")
+    .replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+    .replace(/\u00A0/g, " ")
+    .replace(/^[~\s]+/u, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeActorName(value: string): string {
+  return cleanDisplayName(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function getArg(name: string, fallback?: string): string | undefined {
@@ -77,11 +99,28 @@ async function mergeActor(client: PoolClient, chatNamespace: string, winnerId: s
   canonicalMoved: number;
   evidenceMoved: number;
   aliasesMoved: number;
+  contextsMoved: number;
+  sourceProfilesMoved: number;
   loserDeleted: number;
 }> {
   if (winnerId === loserId) {
-    return { canonicalMoved: 0, evidenceMoved: 0, aliasesMoved: 0, loserDeleted: 0 };
+    return { canonicalMoved: 0, evidenceMoved: 0, aliasesMoved: 0, contextsMoved: 0, sourceProfilesMoved: 0, loserDeleted: 0 };
   }
+
+  await client.query(
+    `UPDATE actors winner
+        SET metadata = COALESCE(winner.metadata, '{}'::jsonb)
+                     || COALESCE(loser.metadata, '{}'::jsonb)
+                     || jsonb_build_object(
+                          'mergedActorIds',
+                          COALESCE(winner.metadata->'mergedActorIds', '[]'::jsonb) || to_jsonb($2::text)
+                        ),
+            updated_at = now()
+       FROM actors loser
+      WHERE winner.actor_id = $1::uuid
+        AND loser.actor_id = $2::uuid`,
+    [winnerId, loserId]
+  );
 
   await client.query(
     `DELETE FROM actor_aliases a
@@ -92,6 +131,43 @@ async function mergeActor(client: PoolClient, chatNamespace: string, winnerId: s
        AND b.chat_namespace = $3
        AND a.alias = b.alias`,
     [loserId, winnerId, chatNamespace]
+  );
+
+  await client.query(
+    `DELETE FROM actor_context lc
+      USING actor_context wc
+     WHERE lc.actor_id = $1::uuid
+       AND wc.actor_id = $2::uuid
+       AND lc.chat_namespace = wc.chat_namespace
+       AND lc.actor_type = wc.actor_type
+       AND lc.canonical_name = wc.canonical_name`,
+    [loserId, winnerId]
+  );
+
+  const contexts = await client.query(
+    `UPDATE actor_context
+        SET actor_id = $1::uuid
+      WHERE actor_id = $2::uuid
+        AND chat_namespace = $3`,
+    [winnerId, loserId, chatNamespace]
+  );
+
+  await client.query(
+    `DELETE FROM actor_source_profile lsp
+      USING actor_source_profile wsp
+     WHERE lsp.actor_id = $1::uuid
+       AND wsp.actor_id = $2::uuid
+       AND lsp.chat_namespace = wsp.chat_namespace
+       AND lsp.source_system = wsp.source_system`,
+    [loserId, winnerId]
+  );
+
+  const sourceProfiles = await client.query(
+    `UPDATE actor_source_profile
+        SET actor_id = $1::uuid
+      WHERE actor_id = $2::uuid
+        AND chat_namespace = $3`,
+    [winnerId, loserId, chatNamespace]
   );
 
   const aliases = await client.query(
@@ -117,17 +193,24 @@ async function mergeActor(client: PoolClient, chatNamespace: string, winnerId: s
     [winnerId, loserId]
   );
 
-  const deleted = await client.query(
+  await client.query(
     `DELETE FROM actor_identities
-      WHERE actor_id = $1::uuid
-        AND chat_namespace = $2`,
-    [loserId, chatNamespace]
+      WHERE actor_id = $1::uuid`,
+    [loserId]
+  );
+
+  const deleted = await client.query(
+    `DELETE FROM actors
+      WHERE actor_id = $1::uuid`,
+    [loserId]
   );
 
   return {
     canonicalMoved: canonical.rowCount ?? 0,
     evidenceMoved: evidence.rowCount ?? 0,
     aliasesMoved: aliases.rowCount ?? 0,
+    contextsMoved: contexts.rowCount ?? 0,
+    sourceProfilesMoved: sourceProfiles.rowCount ?? 0,
     loserDeleted: deleted.rowCount ?? 0
   };
 }
@@ -140,23 +223,25 @@ async function maybeMergeNameConflict(
 ): Promise<void> {
   const self = await client.query<{ actor_type: string }>(
     `SELECT actor_type
-       FROM actor_identities
+       FROM actor_context
       WHERE actor_id = $1::uuid
         AND chat_namespace = $2`,
     [targetActorId, chatNamespace]
   );
   if (self.rowCount === 0) return;
   const actorType = String(self.rows[0].actor_type);
+  const normalizedName = normalizeActorName(targetName);
 
   const conflict = await client.query<{ actor_id: string }>(
-    `SELECT actor_id::text AS actor_id
-       FROM actor_identities
-      WHERE chat_namespace = $1
-        AND actor_type = $2
-        AND canonical_name = $3
-        AND actor_id <> $4::uuid
+    `SELECT ac.actor_id::text AS actor_id
+       FROM actor_context ac
+       JOIN actors a ON a.actor_id = ac.actor_id
+      WHERE ac.chat_namespace = $1
+        AND ac.actor_type = $2
+        AND a.normalized_name = $3
+        AND ac.actor_id <> $4::uuid
       LIMIT 1`,
-    [chatNamespace, actorType, targetName, targetActorId]
+    [chatNamespace, actorType, normalizedName, targetActorId]
   );
 
   if (conflict.rowCount === 0) return;
@@ -222,6 +307,8 @@ async function main(): Promise<void> {
       mergedCanonicalMessages: 0,
       mergedEvidenceLinks: 0,
       mergedAliases: 0,
+      mergedActorContexts: 0,
+      mergedActorSourceProfiles: 0,
       deletedActorsFromMerge: 0,
       deletedActorsByList: 0,
       deletedAliasesByList: 0,
@@ -235,20 +322,43 @@ async function main(): Promise<void> {
         stats.mergedCanonicalMessages += result.canonicalMoved;
         stats.mergedEvidenceLinks += result.evidenceMoved;
         stats.mergedAliases += result.aliasesMoved;
+        stats.mergedActorContexts += result.contextsMoved;
+        stats.mergedActorSourceProfiles += result.sourceProfilesMoved;
         stats.deletedActorsFromMerge += result.loserDeleted;
       }
     }
 
     for (const rename of renameEntries) {
       await maybeMergeNameConflict(client, chatNamespace, rename.actorId, rename.newName);
+      const cleanedName = cleanDisplayName(rename.newName);
+      const normalizedName = normalizeActorName(rename.newName);
       const renamed = await client.query(
-        `UPDATE actor_identities
-            SET canonical_name = $1
-          WHERE actor_id = $2::uuid
-            AND chat_namespace = $3`,
-        [rename.newName, rename.actorId, chatNamespace]
+        `UPDATE actors
+            SET canonical_name = $1,
+                normalized_name = $2,
+                updated_at = now()
+          WHERE actor_id = $3::uuid`,
+        [cleanedName, normalizedName, rename.actorId]
       );
       stats.renamedActors += renamed.rowCount ?? 0;
+
+      await client.query(
+        `UPDATE actor_context
+            SET canonical_name = $1,
+                updated_at = now()
+          WHERE actor_id = $2::uuid
+            AND chat_namespace = $3`,
+        [cleanedName, rename.actorId, chatNamespace]
+      );
+
+      await client.query(
+        `UPDATE actor_identities
+            SET canonical_name = $1,
+                updated_at = now()
+          WHERE actor_id = $2::uuid
+            AND chat_namespace = $3`,
+        [cleanedName, rename.actorId, chatNamespace]
+      );
     }
 
     if (deleteIds.length > 0) {
@@ -277,11 +387,16 @@ async function main(): Promise<void> {
       );
       stats.deletedAliasesByList = deletedAliases.rowCount ?? 0;
 
-      const deletedActors = await client.query(
+      await client.query(
         `DELETE FROM actor_identities
-          WHERE actor_id = ANY($1::uuid[])
-            AND chat_namespace = $2`,
-        [deleteIds, chatNamespace]
+          WHERE actor_id = ANY($1::uuid[])`,
+        [deleteIds]
+      );
+
+      const deletedActors = await client.query(
+        `DELETE FROM actors
+          WHERE actor_id = ANY($1::uuid[])`,
+        [deleteIds]
       );
       stats.deletedActorsByList = deletedActors.rowCount ?? 0;
     }
@@ -318,4 +433,3 @@ main()
   .finally(async () => {
     await pool.end();
   });
-

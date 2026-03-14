@@ -7,6 +7,7 @@ interface ActorRow {
   actorId: string;
   chatNamespace: string;
   actorType: string;
+  actorTypes: string[];
   canonicalName: string;
   confidence: number;
   primarySource: string | null;
@@ -44,6 +45,7 @@ function toNumber(value: unknown, fallback: number): number {
 
 function normalizeName(value: string): string {
   return String(value ?? "")
+    .replace(/^[~\s]+/u, "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
@@ -290,31 +292,35 @@ async function main(): Promise<void> {
   const actorsRaw = await pool.query<{
     actor_id: string;
     chat_namespace: string;
-    actor_type: string;
     canonical_name: string;
     confidence: number;
     source: string | null;
+    actor_types: string[] | null;
     source_systems: string[] | null;
     message_count: string;
     first_seen: string | null;
     last_seen: string | null;
   }>(
     `SELECT
-       ai.actor_id::text AS actor_id,
-       ai.chat_namespace,
-       ai.actor_type,
-       ai.canonical_name,
-       ai.confidence,
-       ai.source,
+       a.actor_id::text AS actor_id,
+       $1::text AS chat_namespace,
+       a.canonical_name,
+       COALESCE(MAX(ac.confidence), 0.5) AS confidence,
+       MIN(ac.source) AS source,
+       COALESCE(array_agg(DISTINCT ac.actor_type ORDER BY ac.actor_type) FILTER (WHERE ac.actor_type IS NOT NULL), '{}'::text[]) AS actor_types,
        COALESCE(array_agg(DISTINCT c.source_system) FILTER (WHERE c.source_system IS NOT NULL), '{}'::text[]) AS source_systems,
        COUNT(c.id)::text AS message_count,
        MIN(c.observed_at)::text AS first_seen,
        MAX(c.observed_at)::text AS last_seen
-     FROM actor_identities ai
-     LEFT JOIN canonical_messages c ON c.actor_id = ai.actor_id
-     WHERE ai.chat_namespace = $1
-     GROUP BY ai.actor_id, ai.chat_namespace, ai.actor_type, ai.canonical_name, ai.confidence, ai.source
-     ORDER BY COUNT(c.id) DESC, ai.canonical_name ASC`,
+     FROM actors a
+     JOIN actor_context ac
+       ON ac.actor_id = a.actor_id
+      AND ac.chat_namespace = $1
+     LEFT JOIN canonical_messages c
+       ON c.actor_id = a.actor_id
+      AND c.chat_namespace = $1
+     GROUP BY a.actor_id, a.canonical_name
+     ORDER BY COUNT(c.id) DESC, a.canonical_name ASC`,
     [chatNamespace]
   );
 
@@ -332,8 +338,9 @@ async function main(): Promise<void> {
     const actor: ActorRow = {
       actorId: String(row.actor_id),
       chatNamespace: String(row.chat_namespace),
-      actorType: String(row.actor_type),
-      canonicalName: String(row.canonical_name),
+      actorType: Array.isArray(row.actor_types) && row.actor_types.length > 0 ? String(row.actor_types[0]) : "unknown",
+      actorTypes: Array.isArray(row.actor_types) ? row.actor_types.map(String).filter(Boolean) : [],
+      canonicalName: String(row.canonical_name).replace(/^[~\s]+/u, ""),
       confidence: Number(row.confidence ?? 0),
       primarySource: row.source ? String(row.source) : null,
       sourceSystems: Array.isArray(row.source_systems) ? row.source_systems.map(String).filter(Boolean) : [],
@@ -365,6 +372,7 @@ async function main(): Promise<void> {
       actor_id: row.actorId,
       canonical_name: row.canonicalName,
       actor_type: row.actorType,
+      actor_types: row.actorTypes.join("|"),
       chat_namespace: row.chatNamespace,
       confidence: row.confidence.toFixed(3),
       message_count: row.messageCount,
@@ -380,6 +388,7 @@ async function main(): Promise<void> {
       "actor_id",
       "canonical_name",
       "actor_type",
+      "actor_types",
       "chat_namespace",
       "confidence",
       "message_count",
@@ -410,12 +419,13 @@ async function main(): Promise<void> {
       actor_id: row.actorId,
       canonical_name: row.canonicalName,
       actor_type: row.actorType,
+      actor_types: row.actorTypes.join("|"),
       message_count: row.messageCount,
       source_systems: row.sourceSystems.join("|"),
       phone_numbers: row.phoneNumbers.join("|"),
       flags: row.flags.join("|")
     })),
-    ["actor_id", "canonical_name", "actor_type", "message_count", "source_systems", "phone_numbers", "flags"]
+    ["actor_id", "canonical_name", "actor_type", "actor_types", "message_count", "source_systems", "phone_numbers", "flags"]
   );
 
   writeFileSync(join(outDir, "actors_full.csv"), actorsCsv, "utf8");

@@ -19,6 +19,10 @@ function nowMs(): number {
   return Date.now();
 }
 
+function sessionTtlMs(): number {
+  return Math.max(60, config.appSessionTtlSec) * 1000;
+}
+
 function buildToken(): string {
   return randomBytes(24).toString("base64url");
 }
@@ -99,7 +103,7 @@ export async function loginWithPassword(password: string): Promise<AuthSession |
   if (!userName) return null;
 
   const token = buildToken();
-  const ttlMs = Math.max(60, config.appSessionTtlSec) * 1000;
+  const ttlMs = sessionTtlMs();
   const expiresAtMs = nowMs() + ttlMs;
 
   sessions.set(token, {
@@ -132,6 +136,8 @@ export function getSession(token: string): SessionState | null {
     sessions.delete(token);
     return null;
   }
+  state.expiresAtMs = nowMs() + sessionTtlMs();
+  sessions.set(token, state);
   return state;
 }
 

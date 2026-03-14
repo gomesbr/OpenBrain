@@ -10,7 +10,9 @@ import type {
   ContextMode,
   PlannerMode,
   RefinementMode,
+  RetrievalFacets,
   RetrievalMode,
+  ReasoningMode,
   StrategyVariantConfig,
   V2AgentName,
   V2AnswerContract,
@@ -40,6 +42,8 @@ function clamp01(value: number): number {
 interface QueryPlan {
   intent: string;
   intentSummary: string;
+  retrievalFacets: RetrievalFacets;
+  reasoningMode: ReasoningMode;
   requiredSlots: string[];
   knownSlots: string[];
   missingSlots: string[];
@@ -247,7 +251,77 @@ function normalizePlannerSignals(value: unknown, max = 10): string[] {
   return Array.from(out).slice(0, max);
 }
 
-function fallbackPlan(question: string): QueryPlan {
+function normalizeRetrievalFacets(value: unknown, fallback?: Partial<RetrievalFacets>): RetrievalFacets {
+  const raw = (value && typeof value === "object" && !Array.isArray(value))
+    ? (value as Record<string, unknown>)
+    : {};
+  return {
+    actorNames: normalizePlannerArray(raw.actorNames ?? fallback?.actorNames, 8),
+    groupLabels: normalizePlannerArray(raw.groupLabels ?? fallback?.groupLabels, 6),
+    threadTitles: normalizePlannerArray(raw.threadTitles ?? fallback?.threadTitles, 6),
+    sourceSystems: normalizePlannerArray(raw.sourceSystems ?? fallback?.sourceSystems, 6)
+      .map((item) => item.toLowerCase())
+      .filter(Boolean),
+    timeConstraints: normalizePlannerArray(raw.timeConstraints ?? fallback?.timeConstraints, 6),
+    topicCues: normalizePlannerSignals(raw.topicCues ?? fallback?.topicCues, 10)
+  };
+}
+
+function extractPotentialActorNames(question: string): string[] {
+  const out = new Set<string>();
+  const matches = String(question ?? "").match(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b/g) ?? [];
+  for (const item of matches) {
+    const normalized = item.trim();
+    if (!normalized) continue;
+    if (["What", "When", "Where", "Which", "Why", "How", "Did", "Does", "Do", "Can", "Could", "Would", "Should"].includes(normalized)) continue;
+    out.add(normalized);
+    if (out.size >= 6) break;
+  }
+  return Array.from(out);
+}
+
+function buildFallbackRetrievalFacets(question: string, timeframe = "all"): RetrievalFacets {
+  const q = normalizeText(question);
+  const topicCues = Array.from(new Set(
+    q.split(/[^a-z0-9]+/i)
+      .filter((x) => x.length >= 4)
+      .filter((x) => !["what", "when", "where", "which", "have", "your", "with", "from", "that", "this", "about"].includes(x))
+      .slice(0, 8)
+  ));
+  const sourceSystems = ["whatsapp", "chatgpt", "grok", "telegram", "codexclaw"]
+    .filter((name) => q.includes(name));
+  const timeConstraints = [
+    timeframe && timeframe !== "all" ? timeframe : "",
+    /\byesterday\b/.test(q) ? "yesterday" : "",
+    /\btoday\b/.test(q) ? "today" : "",
+    /\blast month\b/.test(q) ? "last month" : "",
+    /\blast year\b/.test(q) ? "last year" : ""
+  ].filter(Boolean);
+  return {
+    actorNames: extractPotentialActorNames(question),
+    groupLabels: [],
+    threadTitles: [],
+    sourceSystems,
+    timeConstraints,
+    topicCues
+  };
+}
+
+function inferReasoningMode(question: string, profile: QuestionProfile, questionType: QueryPlan["questionType"], missingSlots: string[] = []): ReasoningMode {
+  const q = normalizeText(question);
+  if (missingSlots.length > 0) return "clarify";
+  if (/\bwhat if\b|\bwould have\b|\bhad not\b|\bif .* had\b/.test(q)) return "counterfactual";
+  if (/\b(thread|chat|conversation)\b/.test(q)) return "thread_reconstruction";
+  if (/\b(timeline|chronology|sequence|first|then|after that|before that)\b/.test(q)) return "timeline_reconstruction";
+  if (/\bwho said\b|\bwhat did .* say\b/.test(q)) return "actor_attribution";
+  if (/\bwhy\b|\bcause\b|\breason\b|\bexplain\b/.test(q)) return "explain";
+  if (/\bcompare\b|\bversus\b|\bvs\b|\bdifference\b/.test(q)) return "compare";
+  if (/\bsummarize\b|\bsummary\b|\bmain point\b/.test(q)) return "summarize";
+  if (questionType === "entity_list" || questionType === "numeric" || profile.kind === "boolean") return "lookup";
+  return "lookup";
+}
+
+function fallbackPlan(question: string, timeframe = "all"): QueryPlan {
   const tokens = normalizeText(question)
     .split(/[^a-z0-9]+/i)
     .filter((x) => x.length >= 4)
@@ -261,9 +335,29 @@ function fallbackPlan(question: string): QueryPlan {
       : /^(do|does|did|is|are|was|were|can|could|should|would|will|have|has|had)\b/.test(q)
         ? "boolean"
         : "open";
+  const retrievalFacets = buildFallbackRetrievalFacets(question, timeframe);
+  const profile = inferQuestionProfile(question, {
+    intent: "lookup",
+    intentSummary: "Find directly grounded evidence for the user request with safe assumptions.",
+    retrievalFacets,
+    reasoningMode: "lookup",
+    requiredSlots: [],
+    knownSlots: [],
+    missingSlots: [],
+    constraints: [],
+    disallowedPaths: [],
+    stopAndAskTriggers: [],
+    subqueries: [],
+    mustHaveSignals: [],
+    avoidPatterns: [],
+    hypotheses: [],
+    questionType
+  });
   return {
     intent: "lookup",
     intentSummary: "Find directly grounded evidence for the user request with safe assumptions.",
+    retrievalFacets,
+    reasoningMode: inferReasoningMode(question, profile, questionType),
     requiredSlots: questionType === "numeric"
       ? ["metric_scope", "time_scope"]
       : questionType === "entity_list"
@@ -298,18 +392,11 @@ function fallbackPlan(question: string): QueryPlan {
 
 async function buildPlannerQueryPlan(question: string, timeframe: string, chatNamespace: string): Promise<QueryPlan> {
   const openAiKey = String(config.openAiApiKey ?? "").trim();
-  const openRouterKey = String(config.openRouterApiKey ?? "").trim();
-  const hasModel = openAiKey.length > 0 || openRouterKey.length > 0;
-  if (!hasModel) return fallbackPlan(question);
+  if (!openAiKey) return fallbackPlan(question, timeframe);
 
-  const provider = openAiKey ? "openai" : "openrouter";
-  const url = provider === "openai"
-    ? `${String(config.openAiBaseUrl || "https://api.openai.com/v1").replace(/\/+$/, "")}/chat/completions`
-    : "https://openrouter.ai/api/v1/chat/completions";
-  const apiKey = provider === "openai" ? openAiKey : openRouterKey;
-  const model = provider === "openai"
-    ? String(config.metadataModel || "gpt-4o-mini").replace(/^openai\//i, "")
-    : String(config.metadataModel || "openai/gpt-4o-mini");
+  const url = `${String(config.openAiBaseUrl || "https://api.openai.com/v1").replace(/\/+$/, "")}/chat/completions`;
+  const apiKey = openAiKey;
+  const model = String(config.metadataModel || "gpt-4o-mini").replace(/^openai\//i, "");
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Math.max(5000, Number(config.requestTimeoutMs ?? 15000)));
@@ -331,8 +418,9 @@ async function buildPlannerQueryPlan(question: string, timeframe: string, chatNa
             role: "system",
             content:
               "You are QueryPlannerAgent for OpenBrain. Convert the user question into retrieval-ready search phrases using OpenBrain capabilities. " +
-              "Return JSON only with keys: intent (string), intentSummary (string), questionType (boolean|entity_list|numeric|open), requiredSlots (string[]), knownSlots (string[]), missingSlots (string[]), constraints (string[]), disallowedPaths (string[]), stopAndAskTriggers (string[]), subqueries (string[]), mustHaveSignals (string[]), avoidPatterns (string[]), hypotheses (string[]). " +
+              "Return JSON only with keys: intent (string), intentSummary (string), reasoningMode (lookup|summarize|actor_attribution|thread_reconstruction|timeline_reconstruction|explain|counterfactual|compare|clarify|insufficient), retrievalFacets (object with actorNames[], groupLabels[], threadTitles[], sourceSystems[], timeConstraints[], topicCues[]), questionType (boolean|entity_list|numeric|open), requiredSlots (string[]), knownSlots (string[]), missingSlots (string[]), constraints (string[]), disallowedPaths (string[]), stopAndAskTriggers (string[]), subqueries (string[]), mustHaveSignals (string[]), avoidPatterns (string[]), hypotheses (string[]). " +
               "Critical constraints: subqueries must be short searchable phrases (2-8 words), not instructions; mustHaveSignals must be atomic terms/short phrases; avoid category-specific hardcoding and record IDs. " +
+              "Plan retrieval facet-first: actor/thread/group/source/time/topic cues are primary. Domain/lens taxonomies are debug metadata, not routing gates. " +
               "Use priority Truth > Safety/Privacy > Task Completion. " +
               "If required slots are missing or scope is ambiguous, set missingSlots and include stopAndAskTriggers accordingly. " +
               "For quantitative questions, include broad metric synonyms (for example: total, balance, net value, current value, account value) and decomposition hypotheses. " +
@@ -350,13 +438,13 @@ async function buildPlannerQueryPlan(question: string, timeframe: string, chatNa
         ]
       })
     });
-    if (!response.ok) return fallbackPlan(question);
+    if (!response.ok) return fallbackPlan(question, timeframe);
     const payload = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
     const content = String(payload?.choices?.[0]?.message?.content ?? "").trim();
     const parsed = parseJsonObjectLike(content);
-    if (!parsed) return fallbackPlan(question);
+    if (!parsed) return fallbackPlan(question, timeframe);
     const subqueries = normalizePlannerArray(parsed.subqueries, 10);
-    if (subqueries.length === 0) return fallbackPlan(question);
+    if (subqueries.length === 0) return fallbackPlan(question, timeframe);
     const parsedQuestionType = (() => {
       const raw = String(parsed.questionType ?? "").trim().toLowerCase();
       if (raw === "boolean" || raw === "entity_list" || raw === "numeric") return raw;
@@ -373,9 +461,30 @@ async function buildPlannerQueryPlan(question: string, timeframe: string, chatNa
         mergedQueries.add(q);
       }
     }
+    const retrievalFacets = normalizeRetrievalFacets(
+      parsed.retrievalFacets,
+      buildFallbackRetrievalFacets(question, timeframe)
+    );
+    const fallbackProfile = inferQuestionProfile(question, fallbackPlan(question, timeframe));
+    const reasoningModeRaw = String(parsed.reasoningMode ?? "").trim().toLowerCase();
+    const reasoningMode: ReasoningMode =
+      reasoningModeRaw === "lookup"
+      || reasoningModeRaw === "summarize"
+      || reasoningModeRaw === "actor_attribution"
+      || reasoningModeRaw === "thread_reconstruction"
+      || reasoningModeRaw === "timeline_reconstruction"
+      || reasoningModeRaw === "explain"
+      || reasoningModeRaw === "counterfactual"
+      || reasoningModeRaw === "compare"
+      || reasoningModeRaw === "clarify"
+      || reasoningModeRaw === "insufficient"
+        ? reasoningModeRaw
+        : inferReasoningMode(question, fallbackProfile, parsedQuestionType, normalizePlannerArray(parsed.missingSlots, 10));
     return {
       intent: String(parsed.intent ?? "lookup").trim() || "lookup",
       intentSummary: String(parsed.intentSummary ?? "Find grounded evidence and answer safely.").trim() || "Find grounded evidence and answer safely.",
+      retrievalFacets,
+      reasoningMode,
       requiredSlots: normalizePlannerArray(parsed.requiredSlots, 10),
       knownSlots: normalizePlannerArray(parsed.knownSlots, 10),
       missingSlots: normalizePlannerArray(parsed.missingSlots, 10),
@@ -389,7 +498,7 @@ async function buildPlannerQueryPlan(question: string, timeframe: string, chatNa
       hypotheses: normalizePlannerArray(parsed.hypotheses, 8)
     };
   } catch {
-    return fallbackPlan(question);
+    return fallbackPlan(question, timeframe);
   } finally {
     clearTimeout(timeout);
   }
@@ -410,18 +519,11 @@ async function synthesizeAnswerContractWithModel(params: {
   composerMode: ComposerMode;
 }): Promise<V2AnswerContract | null> {
   const openAiKey = String(config.openAiApiKey ?? "").trim();
-  const openRouterKey = String(config.openRouterApiKey ?? "").trim();
-  const hasModel = openAiKey.length > 0 || openRouterKey.length > 0;
-  if (params.composerMode === "heuristic" || !hasModel || params.evidence.length === 0) return null;
+  if (params.composerMode === "heuristic" || !openAiKey || params.evidence.length === 0) return null;
 
-  const provider = openAiKey ? "openai" : "openrouter";
-  const url = provider === "openai"
-    ? `${String(config.openAiBaseUrl || "https://api.openai.com/v1").replace(/\/+$/, "")}/chat/completions`
-    : "https://openrouter.ai/api/v1/chat/completions";
-  const apiKey = provider === "openai" ? openAiKey : openRouterKey;
-  const model = provider === "openai"
-    ? String(config.metadataModel || "gpt-4o-mini").replace(/^openai\//i, "")
-    : String(config.metadataModel || "openai/gpt-4o-mini");
+  const url = `${String(config.openAiBaseUrl || "https://api.openai.com/v1").replace(/\/+$/, "")}/chat/completions`;
+  const apiKey = openAiKey;
+  const model = String(config.metadataModel || "gpt-4o-mini").replace(/^openai\//i, "");
 
   const evidencePayload = params.evidence.slice(0, 12).map((ev, idx) => ({
     rank: idx + 1,
@@ -485,6 +587,8 @@ async function synthesizeAnswerContractWithModel(params: {
               planner: {
                 intent: params.plan.intent,
                 intentSummary: params.plan.intentSummary,
+                reasoningMode: params.plan.reasoningMode,
+                retrievalFacets: params.plan.retrievalFacets,
                 requiredSlots: params.plan.requiredSlots,
                 knownSlots: params.plan.knownSlots,
                 missingSlots: params.plan.missingSlots,
@@ -581,7 +685,9 @@ async function synthesizeAnswerContractWithModel(params: {
       assumptionsUsed,
       constraintChecks: constraintChecks.length > 0 ? constraintChecks : params.fallback.constraintChecks,
       finalAnswer,
-      status
+      status,
+      retrievalFacetsUsed: params.plan.retrievalFacets,
+      reasoningMode: params.plan.reasoningMode
     };
     return contract;
   } catch {
@@ -966,7 +1072,9 @@ function buildAnswerContract(params: {
       hasMissingSlots: params.plan.missingSlots.length > 0
     }),
     finalAnswer,
-    status
+    status,
+    retrievalFacetsUsed: params.plan.retrievalFacets,
+    reasoningMode: params.plan.reasoningMode
   };
 }
 
@@ -1633,6 +1741,8 @@ export async function askV2(input: V2AskRequest, principal: V2Principal): Promis
         questionProfile,
         plannerIntent: planner.intent,
         plannerIntentSummary: planner.intentSummary,
+        plannerReasoningMode: planner.reasoningMode,
+        plannerRetrievalFacets: planner.retrievalFacets,
         plannerRequiredSlots: planner.requiredSlots,
         plannerKnownSlots: planner.knownSlots,
         plannerMissingSlots: planner.missingSlots,
@@ -1648,6 +1758,8 @@ export async function askV2(input: V2AskRequest, principal: V2Principal): Promis
         consistency,
         contradiction,
         numericValues,
+        retrievalFacetsUsed: answerContract.retrievalFacetsUsed ?? planner.retrievalFacets,
+        reasoningMode: answerContract.reasoningMode ?? planner.reasoningMode,
         bootstrap
       })
     ]

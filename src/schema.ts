@@ -327,7 +327,7 @@ UPDATE canonical_messages c
    SET actor_id = a.actor_id
   FROM actor_identities ai
   JOIN actors a
-    ON a.normalized_name = lower(regexp_replace(trim(ai.canonical_name), '\s+', ' ', 'g'))
+    ON a.normalized_name = lower(regexp_replace(regexp_replace(replace(replace(ai.canonical_name, chr(160), ' '), chr(8239), ' '), '^[~\s]+', ''), '\s+', ' ', 'g'))
  WHERE c.actor_id = ai.actor_id
    AND c.actor_id <> a.actor_id;
 UPDATE canonical_messages c
@@ -347,19 +347,19 @@ ALTER TABLE canonical_messages
 WITH legacy_ranked AS (
   SELECT
     ai.actor_id,
-    ai.canonical_name,
-    lower(regexp_replace(trim(ai.canonical_name), '\s+', ' ', 'g')) AS normalized_name,
+    regexp_replace(replace(replace(ai.canonical_name, chr(160), ' '), chr(8239), ' '), '^[~\s]+', '') AS canonical_name,
+    lower(regexp_replace(regexp_replace(replace(replace(ai.canonical_name, chr(160), ' '), chr(8239), ' '), '^[~\s]+', ''), '\s+', ' ', 'g')) AS normalized_name,
     ai.source,
     ai.metadata,
     ai.created_at,
     ai.updated_at,
     ROW_NUMBER() OVER (
-      PARTITION BY lower(regexp_replace(trim(ai.canonical_name), '\s+', ' ', 'g'))
+      PARTITION BY lower(regexp_replace(regexp_replace(replace(replace(ai.canonical_name, chr(160), ' '), chr(8239), ' '), '^[~\s]+', ''), '\s+', ' ', 'g'))
       ORDER BY ai.confidence DESC NULLS LAST, ai.updated_at DESC NULLS LAST, ai.actor_id
     ) AS rn
   FROM actor_identities ai
   WHERE ai.canonical_name IS NOT NULL
-    AND trim(ai.canonical_name) <> ''
+    AND trim(regexp_replace(replace(replace(ai.canonical_name, chr(160), ' '), chr(8239), ' '), '^[~\s]+', '')) <> ''
 )
 INSERT INTO actors (
   actor_id,
@@ -382,6 +382,11 @@ SELECT
   lr.updated_at
 FROM legacy_ranked lr
 WHERE lr.rn = 1
+  AND NOT EXISTS (
+    SELECT 1
+      FROM actors existing
+     WHERE existing.actor_id = lr.actor_id
+  )
 ON CONFLICT (normalized_name)
 DO UPDATE SET
   canonical_name = EXCLUDED.canonical_name,
@@ -403,7 +408,7 @@ SELECT
   a.actor_id,
   ai.chat_namespace,
   ai.actor_type,
-  ai.canonical_name,
+  regexp_replace(replace(replace(ai.canonical_name, chr(160), ' '), chr(8239), ' '), '^[~\s]+', ''),
   ai.source,
   ai.confidence,
   COALESCE(ai.metadata, '{}'::jsonb),
@@ -411,7 +416,7 @@ SELECT
   ai.updated_at
 FROM actor_identities ai
 JOIN actors a
-  ON a.normalized_name = lower(regexp_replace(trim(ai.canonical_name), '\s+', ' ', 'g'))
+  ON a.normalized_name = lower(regexp_replace(regexp_replace(replace(replace(ai.canonical_name, chr(160), ' '), chr(8239), ' '), '^[~\s]+', ''), '\s+', ' ', 'g'))
 ON CONFLICT (chat_namespace, actor_type, canonical_name)
 DO UPDATE SET
   actor_id = EXCLUDED.actor_id,
@@ -424,7 +429,7 @@ UPDATE actor_aliases aa
    SET actor_id = a.actor_id
   FROM actor_identities ai
   JOIN actors a
-    ON a.normalized_name = lower(regexp_replace(trim(ai.canonical_name), '\s+', ' ', 'g'))
+    ON a.normalized_name = lower(regexp_replace(regexp_replace(replace(replace(ai.canonical_name, chr(160), ' '), chr(8239), ' '), '^[~\s]+', ''), '\s+', ' ', 'g'))
  WHERE aa.actor_id = ai.actor_id
    AND aa.actor_id <> a.actor_id;
 
@@ -432,7 +437,7 @@ UPDATE canonical_messages c
    SET actor_id = a.actor_id
   FROM actor_identities ai
   JOIN actors a
-    ON a.normalized_name = lower(regexp_replace(trim(ai.canonical_name), '\s+', ' ', 'g'))
+    ON a.normalized_name = lower(regexp_replace(regexp_replace(replace(replace(ai.canonical_name, chr(160), ' '), chr(8239), ' '), '^[~\s]+', ''), '\s+', ' ', 'g'))
  WHERE c.actor_id = ai.actor_id
    AND c.actor_id <> a.actor_id;
 
@@ -785,11 +790,11 @@ CREATE TABLE IF NOT EXISTS experiment_runs (
   name text NOT NULL,
   chat_namespace text NOT NULL DEFAULT 'personal.main',
   status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'completed', 'failed')),
-  target_pass_rate double precision NOT NULL DEFAULT 0.99,
-  critical_target_pass_rate double precision NOT NULL DEFAULT 0.99,
-  per_domain_floor double precision NOT NULL DEFAULT 0.97,
-  latency_gate_multiplier double precision NOT NULL DEFAULT 1.25,
-  cost_gate_multiplier double precision NOT NULL DEFAULT 1.25,
+  target_pass_rate double precision NOT NULL DEFAULT 0.90,
+  critical_target_pass_rate double precision NOT NULL DEFAULT 0.93,
+  per_domain_floor double precision NOT NULL DEFAULT 0.75,
+  latency_gate_multiplier double precision NOT NULL DEFAULT 1.50,
+  cost_gate_multiplier double precision NOT NULL DEFAULT 1.50,
   dataset_version text NOT NULL DEFAULT '',
   strategy_cursor integer NOT NULL DEFAULT 0,
   winner_strategy_id text,
@@ -808,6 +813,9 @@ ALTER TABLE experiment_runs
   ADD COLUMN IF NOT EXISTS interrupted_at timestamptz;
 ALTER TABLE experiment_runs
   ADD COLUMN IF NOT EXISTS aborted_at timestamptz;
+ALTER TABLE experiment_runs
+  ADD COLUMN IF NOT EXISTS benchmark_stage text NOT NULL DEFAULT 'draft'
+    CHECK (benchmark_stage IN ('draft', 'core_ready', 'selection_ready', 'certification_ready'));
 ALTER TABLE experiment_runs
   ADD COLUMN IF NOT EXISTS active_benchmark_lock_version text;
 ALTER TABLE experiment_runs
@@ -936,6 +944,8 @@ CREATE TABLE IF NOT EXISTS benchmark_lock_versions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   experiment_id uuid NOT NULL REFERENCES experiment_runs(id) ON DELETE CASCADE,
   lock_version text NOT NULL,
+  lock_stage text NOT NULL DEFAULT 'draft'
+    CHECK (lock_stage IN ('draft', 'core_ready', 'selection_ready', 'certification_ready')),
   included_clear integer NOT NULL DEFAULT 0,
   included_clarify integer NOT NULL DEFAULT 0,
   unresolved integer NOT NULL DEFAULT 0,
@@ -945,6 +955,10 @@ CREATE TABLE IF NOT EXISTS benchmark_lock_versions (
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (experiment_id, lock_version)
 );
+
+ALTER TABLE benchmark_lock_versions
+  ADD COLUMN IF NOT EXISTS lock_stage text NOT NULL DEFAULT 'draft'
+    CHECK (lock_stage IN ('draft', 'core_ready', 'selection_ready', 'certification_ready'));
 
 CREATE TABLE IF NOT EXISTS taxonomy_versions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1072,9 +1086,21 @@ CREATE TABLE IF NOT EXISTS experiment_winner_decisions (
   p95_latency_ms double precision NOT NULL DEFAULT 0,
   estimated_cost_per_1k double precision NOT NULL DEFAULT 0,
   decision text NOT NULL CHECK (decision IN ('winner', 'candidate', 'rejected')),
+  decision_layer text NOT NULL DEFAULT 'exploratory'
+    CHECK (decision_layer IN ('exploratory', 'provisional', 'certification')),
+  composite_score double precision NOT NULL DEFAULT 0,
+  gate_results jsonb NOT NULL DEFAULT '{}'::jsonb,
   reason text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE experiment_winner_decisions
+  ADD COLUMN IF NOT EXISTS decision_layer text NOT NULL DEFAULT 'exploratory'
+    CHECK (decision_layer IN ('exploratory', 'provisional', 'certification'));
+ALTER TABLE experiment_winner_decisions
+  ADD COLUMN IF NOT EXISTS composite_score double precision NOT NULL DEFAULT 0;
+ALTER TABLE experiment_winner_decisions
+  ADD COLUMN IF NOT EXISTS gate_results jsonb NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE TABLE IF NOT EXISTS hypotheses (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

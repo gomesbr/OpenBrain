@@ -26,6 +26,26 @@ export type V2MessageType =
 
 export type V2AnswerStatus = "definitive" | "estimated" | "partial" | "insufficient" | "clarification_needed";
 export type V2AskDecision = "answer_now" | "clarify_first" | "insufficient";
+export type ReasoningMode =
+  | "lookup"
+  | "summarize"
+  | "actor_attribution"
+  | "thread_reconstruction"
+  | "timeline_reconstruction"
+  | "explain"
+  | "counterfactual"
+  | "compare"
+  | "clarify"
+  | "insufficient";
+
+export interface RetrievalFacets {
+  actorNames: string[];
+  groupLabels: string[];
+  threadTitles: string[];
+  sourceSystems: string[];
+  timeConstraints: string[];
+  topicCues: string[];
+}
 
 export interface V2AgentRequestEnvelope {
   schemaVersion: string;
@@ -96,6 +116,8 @@ export interface V2AnswerContract {
   constraintChecks: V2ConstraintCheck[];
   finalAnswer: V2FinalAnswer | null;
   status: V2AnswerStatus;
+  retrievalFacetsUsed?: RetrievalFacets;
+  reasoningMode?: ReasoningMode;
 }
 
 export interface V2EvidenceRef {
@@ -337,6 +359,94 @@ export interface FailureBreakdown {
   planWindowCompactionMiss: number;
 }
 
+export type BenchmarkStage = "draft" | "core_ready" | "selection_ready" | "certification_ready";
+export type WinnerDecisionLayer = "exploratory" | "provisional" | "certification";
+export type EvidenceFamilyTopology =
+  | "human_direct_1to1"
+  | "human_group_chat"
+  | "third_party_human"
+  | "other_human"
+  | "assistant_thread"
+  | "system_artifact";
+export type ConversationTopology = EvidenceFamilyTopology;
+
+export interface BenchmarkStageThresholds {
+  ownerReviewedTotalMin: number;
+  ownerApprovedYesMin: number;
+  representativeNoMin: number;
+  reviewedClarifyMin: number;
+  approvedDomainCoverageMin: number;
+  approvedLensCoverageMin: number;
+  actorCoverageMin: number;
+  groupCoverageMin: number;
+  threadCoverageMin: number;
+  sourceCoverageMin: number;
+  timeCoverageMin: number;
+  humanCaseShareMin: number;
+  direct1to1CoverageMin: number;
+  groupChatCoverageMin: number;
+  thirdPartyCoverageMin: number;
+  distinctHumanActorsMin: number;
+  distinctHumanGroupsMin: number;
+  distinctConversationFamiliesMin: number;
+  criticalReviewedSliceMin: number;
+  pendingOwnerMax: number;
+  pendingCalibrationMax: number;
+}
+
+export interface BenchmarkReadinessProfile {
+  profileId: string;
+  stages: Record<Exclude<BenchmarkStage, "draft">, BenchmarkStageThresholds>;
+}
+
+export interface StrategySelectionProfile {
+  profileId: string;
+  disqualifiers: {
+    minGroundingRate: number;
+    maxFalseConfidentRate: number;
+    minBehaviorCorrectRate: number;
+    maxLatencyMultiplier: number;
+    maxCostMultiplier: number;
+  };
+  compositeWeights: {
+    behaviorCorrectRate: number;
+    groundingRate: number;
+    attributionAggregate: number;
+    clarifyAggregate: number;
+    retrievalAggregate: number;
+    efficiencyAggregate: number;
+    stabilityScore: number;
+  };
+  provisional: {
+    minBehaviorCorrectRate: number;
+    minClearBehaviorCorrectRate: number;
+    minClarifyBehaviorCorrectRate: number;
+    minGroundingRate: number;
+    maxFalseConfidentRate: number;
+    minEvidenceHitRate: number;
+    perDomainFloor: number;
+    perDomainMinCases: number;
+    maxLatencyMultiplier: number;
+    maxCostMultiplier: number;
+  };
+}
+
+export interface StrategyCertificationProfile {
+  profileId: string;
+  minBehaviorCorrectRate: number;
+  minClearBehaviorCorrectRate: number;
+  minClarifyBehaviorCorrectRate: number;
+  minGroundingRate: number;
+  maxFalseConfidentRate: number;
+  minEvidenceHitRate: number;
+  perDomainFloor: number;
+  perDomainMinCases: number;
+  maxLatencyMultiplier: number;
+  maxCostMultiplier: number;
+  criticalMinCasesForRate: number;
+  criticalBehaviorCorrectRate: number;
+}
+
 export interface EvaluationScorecard {
   strategyId: string;
   variantId: string;
@@ -345,6 +455,22 @@ export interface EvaluationScorecard {
   passedCases: number;
   failedCases: number;
   passRate: number;
+  behaviorCorrectRate?: number;
+  clearBehaviorCorrectRate?: number;
+  clarifyBehaviorCorrectRate?: number;
+  insufficientBehaviorCorrectRate?: number;
+  groundingRate?: number;
+  falseConfidentRate?: number;
+  actorAttributionAccuracy?: number;
+  threadScopeAccuracy?: number;
+  timeScopeAccuracy?: number;
+  actorFacetCoverage?: number;
+  groupFacetCoverage?: number;
+  threadFacetCoverage?: number;
+  sourceFacetCoverage?: number;
+  timeFacetCoverage?: number;
+  stabilityScore?: number;
+  criticalBehaviorCorrectRate?: number;
   p95LatencyMs: number;
   avgLatencyMs: number;
   estimatedCostPer1kAsks: number;
@@ -457,6 +583,7 @@ export interface ExperimentRun {
   status: "queued" | "running" | "completed" | "failed";
   targetPassRate: number;
   chatNamespace: string;
+  benchmarkStage?: BenchmarkStage;
   startedAt: string | null;
   finishedAt: string | null;
 }
@@ -469,6 +596,9 @@ export interface WinnerDecision {
   p95LatencyMs: number;
   estimatedCostPer1kAsks: number;
   decision: "winner" | "candidate" | "rejected";
+  decisionLayer: WinnerDecisionLayer;
+  compositeScore: number;
+  gateResults: Record<string, unknown>;
   reason: string;
   createdAt: string;
 }
@@ -484,6 +614,10 @@ export interface V2ExperimentStartRequest {
   datasetVersion?: string;
   strategyIds?: string[];
   maxCasesPerPair?: number;
+  selectionProfileId?: string;
+  selectionProfile?: StrategySelectionProfile;
+  certificationProfile?: StrategyCertificationProfile;
+  readinessProfile?: BenchmarkReadinessProfile;
 }
 
 export interface V2ExperimentStepRequest {
@@ -501,6 +635,9 @@ export interface EvolutionOverview {
     chatNamespace: string;
     activeLockVersion: string | null;
     winnerVariantId: string | null;
+    benchmarkStage?: BenchmarkStage;
+    provisionalWinnerVariantId?: string | null;
+    certificationStatus?: string | null;
     taxonomyVersionId?: string | null;
     taxonomyVersionKey?: string | null;
     benchmarkStale?: boolean;
@@ -509,6 +646,20 @@ export interface EvolutionOverview {
     currentVariantId: string | null;
     bestVariantId: string | null;
     bestPassRate: number;
+    bestCompositeScore?: number;
+    behaviorCorrectRate?: number;
+    groundingRate?: number;
+    falseConfidentRate?: number;
+    clearBehaviorCorrectRate?: number;
+    clarifyBehaviorCorrectRate?: number;
+    humanCaseShare?: number;
+    assistantCaseShare?: number;
+    direct1to1Coverage?: number;
+    groupChatCoverage?: number;
+    thirdPartyCoverage?: number;
+    distinctHumanActors?: number;
+    distinctHumanGroups?: number;
+    distinctConversationFamilies?: number;
     clearPassRate: number;
     clarifyPassRate: number;
     unresolvedAmbiguousRatio: number | null;
@@ -541,6 +692,11 @@ export interface StrategyFrontierPoint {
   status: string;
   groupId: number;
   passRate: number;
+  behaviorCorrectRate?: number;
+  groundingRate?: number;
+  falseConfidentRate?: number;
+  compositeScore?: number;
+  decisionLayer?: WinnerDecisionLayer;
   latencyP95Ms: number;
   costPer1k: number;
   latencyMultiplier: number;
@@ -624,14 +780,20 @@ export interface CaseQualityGateResult {
 export interface BenchmarkSemanticFrame {
   domain: string;
   lens: string;
+  topology: EvidenceFamilyTopology;
+  retrievalFacets: RetrievalFacets;
   participants: string[];
   actorScope: string | null;
   statementOwnerName: string | null;
   statementOwnerRole: "user" | "other_human" | "assistant_or_system" | "mixed";
+  statementTargetName: string | null;
   preferredQuestionVoices: Array<"user_first_person" | "user_about_other" | "assistant_proxy">;
   timeframe: string;
   conversationIntent: string;
   topicSummary: string;
+  sourceConversationLabel: string | null;
+  concreteClaims: string[];
+  anchorQualityScore: number;
   supportDepth: "thin" | "moderate" | "rich";
   ambiguityRisk: "low" | "medium" | "high";
   supportedLenses: string[];
@@ -702,6 +864,7 @@ export interface BenchmarkAuthoringDraft {
 export interface PreloopReadiness {
   experimentId: string;
   activeLockVersion: string | null;
+  benchmarkStage?: BenchmarkStage;
   taxonomy: {
     versionId: string | null;
     versionKey: string | null;
@@ -738,6 +901,39 @@ export interface PreloopReadiness {
     rejected: number;
     eligibleForScoring: number;
     calibrationEligible: number;
+    ownerReviewedTotal?: number;
+    ownerApprovedYes?: number;
+    ownerRejectedNo?: number;
+    reviewedClarify?: number;
+    approvedDomainCoverage?: number;
+    approvedLensCoverage?: number;
+    approvedActorCoverage?: number;
+    approvedGroupCoverage?: number;
+    approvedThreadCoverage?: number;
+    approvedSourceCoverage?: number;
+    approvedTimeCoverage?: number;
+    approvedHumanCaseShare?: number;
+    approvedAssistantCaseShare?: number;
+    approvedDirect1to1Coverage?: number;
+    approvedGroupChatCoverage?: number;
+    approvedThirdPartyCoverage?: number;
+    approvedDistinctHumanActors?: number;
+    approvedDistinctHumanGroups?: number;
+    approvedDistinctConversationFamilies?: number;
+    criticalReviewedSlice?: number;
+    reviewableActorCoverage?: number;
+    reviewableGroupCoverage?: number;
+    reviewableThreadCoverage?: number;
+    reviewableSourceCoverage?: number;
+    reviewableTimeCoverage?: number;
+    reviewableHumanCaseShare?: number;
+    reviewableAssistantCaseShare?: number;
+    reviewableDirect1to1Coverage?: number;
+    reviewableGroupChatCoverage?: number;
+    reviewableThirdPartyCoverage?: number;
+    reviewableDistinctHumanActors?: number;
+    reviewableDistinctHumanGroups?: number;
+    reviewableDistinctConversationFamilies?: number;
   };
   metrics: {
     clearPassRate: number;
@@ -745,6 +941,12 @@ export interface PreloopReadiness {
     unresolvedAmbiguousRatio: number;
     verifierPassRate: number;
   };
+  stageReadiness?: Record<Exclude<BenchmarkStage, "draft">, {
+    stage: Exclude<BenchmarkStage, "draft">;
+    pass: boolean;
+    blockers: string[];
+    thresholds: BenchmarkStageThresholds;
+  }>;
   gates: {
     clearPassTarget: number;
     clarifyPassTarget: number;
@@ -755,6 +957,8 @@ export interface PreloopReadiness {
     noPendingOwnerPass: boolean;
     noPendingCalibrationPass: boolean;
     readyForLock: boolean;
+    readyForSelectionLock?: boolean;
+    readyForCertificationLock?: boolean;
     readyForStart: boolean;
   };
 }

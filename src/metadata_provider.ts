@@ -2,7 +2,6 @@ import { config } from "./config.js";
 import { inferStructuredSignals } from "./domain_inference.js";
 
 const OPENAI_BASE = "https://api.openai.com/v1";
-const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 
 export interface ExtractMetadataOptions {
   contextWindow?: string[];
@@ -335,24 +334,20 @@ function shouldUseModelMetadata(params: {
   return false;
 }
 
-function resolveMetadataProvider(): "mock" | "openai" | "openrouter" {
+function resolveMetadataProvider(): "mock" | "openai" {
   const raw = config.metadataProvider.toLowerCase();
-  if (raw === "openai" || raw === "openrouter" || raw === "mock") {
+  if (raw === "openai" || raw === "mock") {
     return raw;
   }
 
   const embeddingMode = config.embeddingMode.toLowerCase();
   if (embeddingMode === "openai") return "openai";
-  if (embeddingMode === "openrouter") return "openrouter";
   return "mock";
 }
 
-function resolveMetadataModel(provider: "openai" | "openrouter", model: string): string {
+function resolveMetadataModel(provider: "openai", model: string): string {
   const trimmed = String(model ?? "").trim();
-  if (provider === "openai") {
-    return trimmed.replace(/^openai\//i, "") || "gpt-4o-mini";
-  }
-  return trimmed || "openai/gpt-4o-mini";
+  return trimmed.replace(/^openai\//i, "") || "gpt-4o-mini";
 }
 
 function composePrompt(text: string, options?: ExtractMetadataOptions): string {
@@ -561,16 +556,5 @@ export async function extractMetadata(text: string, options?: ExtractMetadataOpt
     });
   }
 
-  if (!config.openRouterApiKey) {
-    return fallbackWithError(text, "missing_openrouter_api_key", options);
-  }
-
-  return requestMetadata({
-    providerLabel: "OpenRouter",
-    baseUrl: OPENROUTER_BASE,
-    apiKey: config.openRouterApiKey,
-    model: resolveMetadataModel("openrouter", config.metadataModel),
-    text,
-    options
-  });
+  return fallbackWithError(text, "unsupported_metadata_provider", options);
 }
