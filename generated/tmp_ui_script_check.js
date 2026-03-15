@@ -1,1407 +1,12 @@
-export function renderAppHtml(): string {
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OpenBrain 360</title>
-  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.31.0/dist/cytoscape.min.js"></script>
-  <style>
-    :root {
-      --bg: #07111f;
-      --panel: #0b1f38;
-      --panel-soft: #0d2847;
-      --text: #dfe8f4;
-      --muted: #8ca3bf;
-      --line: #1f3b60;
-      --accent: #46c0ff;
-      --ok: #39d98a;
-      --warn: #f5ad42;
-      --danger: #ff6b6b;
-      --shadow: 0 8px 24px rgba(0,0,0,0.28);
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
-      color: var(--text);
-      background:
-        radial-gradient(circle at 10% 10%, rgba(70, 192, 255, 0.14), transparent 45%),
-        radial-gradient(circle at 90% 90%, rgba(57, 217, 138, 0.10), transparent 45%),
-        linear-gradient(180deg, #06101d, #050c16 70%);
-      min-height: 100vh;
-    }
-    #loginPage, #appPage { min-height: 100vh; }
-    #loginPage {
-      display: grid;
-      place-items: center;
-      padding: 24px;
-    }
-    .login-card {
-      width: min(420px, 100%);
-      background: rgba(8, 24, 43, 0.94);
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      padding: 24px;
-      box-shadow: var(--shadow);
-    }
-    .login-card h1 {
-      margin: 0 0 8px;
-      font-size: 28px;
-      letter-spacing: 0.4px;
-    }
-    .login-card p {
-      margin: 0 0 20px;
-      color: var(--muted);
-      font-size: 14px;
-    }
-    input, select, button, textarea {
-      font: inherit;
-      color: var(--text);
-      background: #0a1b31;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 10px 12px;
-    }
-    button {
-      background: linear-gradient(180deg, #12375f, #102f50);
-      border-color: #2b537f;
-      cursor: pointer;
-      font-weight: 600;
-    }
-    button:hover { filter: brightness(1.08); }
-    .error { color: var(--danger); font-size: 13px; min-height: 18px; }
-
-    #appPage { display: none; }
-    .layout {
-      display: grid;
-      grid-template-columns: 240px 1fr;
-      min-height: 100vh;
-    }
-    .rail {
-      border-right: 1px solid var(--line);
-      padding: 16px 12px;
-      background: linear-gradient(180deg, rgba(9, 28, 49, 0.92), rgba(7, 20, 36, 0.98));
-    }
-    .brand {
-      font-size: 18px;
-      font-weight: 800;
-      margin: 6px 8px 16px;
-    }
-    .nav-btn {
-      width: 100%;
-      text-align: left;
-      margin: 0 0 8px;
-      background: #0b213b;
-      border: 1px solid var(--line);
-      color: var(--text);
-      border-radius: 10px;
-    }
-    .nav-btn.active {
-      border-color: var(--accent);
-      box-shadow: inset 0 0 0 1px rgba(70,192,255,0.5);
-      background: #0f2e4f;
-    }
-    .content {
-      display: grid;
-      grid-template-rows: auto 1fr;
-      min-width: 0;
-    }
-    .topbar {
-      border-bottom: 1px solid var(--line);
-      padding: 12px 16px;
-      display: grid;
-      grid-template-columns: 1fr auto auto auto auto auto;
-      gap: 8px;
-      align-items: center;
-      position: sticky;
-      top: 0;
-      z-index: 10;
-      backdrop-filter: blur(10px);
-      background: rgba(7, 20, 36, 0.86);
-    }
-    .panel-wrap {
-      padding: 14px;
-      display: grid;
-      gap: 12px;
-      align-content: start;
-      overflow: auto;
-    }
-    .panel {
-      background: rgba(12, 35, 60, 0.78);
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 12px;
-      box-shadow: var(--shadow);
-    }
-    .panel h3, .panel h4 { margin: 0 0 8px; }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-      gap: 12px;
-    }
-    .metric {
-      background: #0b2440;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 10px;
-    }
-    .metric b { font-size: 24px; display: block; margin-top: 4px; }
-    .chart {
-      min-height: 320px;
-      width: 100%;
-    }
-    .graph {
-      min-height: 580px;
-      width: 100%;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #081627;
-    }
-    .people-panel {
-      min-height: calc(100vh - 220px);
-      display: grid;
-      grid-template-rows: auto 1fr;
-    }
-    .timeline-item {
-      padding: 10px 0;
-      border-bottom: 1px solid #1f3b60;
-    }
-    .timeline-domain {
-      font-weight: 700;
-      text-transform: capitalize;
-      margin-right: 6px;
-    }
-    .timeline-chip {
-      display: inline-block;
-      margin-right: 6px;
-      padding: 2px 8px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      font-size: 12px;
-      color: #9fc3e8;
-      text-transform: capitalize;
-      background: rgba(15, 46, 79, 0.55);
-    }
-    .hidden { display: none !important; }
-    .badge {
-      display: inline-flex;
-      border-radius: 999px;
-      padding: 3px 10px;
-      border: 1px solid var(--line);
-      font-size: 12px;
-      color: var(--muted);
-      margin-right: 6px;
-    }
-    .badge.mode-private { border-color: var(--ok); color: var(--ok); }
-    .badge.mode-share_safe { border-color: var(--warn); color: var(--warn); }
-    .badge.mode-demo { border-color: var(--danger); color: var(--danger); }
-    .muted { color: var(--muted); }
-    .ask-answer { white-space: pre-wrap; line-height: 1.45; }
-    .ask-tabs {
-      display: inline-flex;
-      gap: 8px;
-      margin: 6px 0 10px;
-    }
-    .ask-tab-btn {
-      padding: 6px 10px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      background: #0b213b;
-      color: var(--muted);
-      cursor: pointer;
-      font-size: 13px;
-    }
-    .ask-tab-btn.active {
-      border-color: var(--accent);
-      color: var(--text);
-      background: #0f2e4f;
-    }
-    .ask-debug-flow {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #081627;
-      padding: 10px;
-      max-height: 520px;
-      overflow: auto;
-    }
-    .ask-debug-swim {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      min-width: max-content;
-    }
-    .ask-debug-lane-row {
-      display: grid;
-      gap: 8px;
-      position: sticky;
-      top: 0;
-      z-index: 2;
-      background: #081627;
-      padding-bottom: 6px;
-    }
-    .ask-debug-lane {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #0b2036;
-      padding: 6px 8px;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .ask-debug-row {
-      display: grid;
-      gap: 8px;
-      align-items: start;
-    }
-    .ask-debug-cell {
-      min-height: 4px;
-    }
-    .ask-debug-bubble {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #0b2036;
-      padding: 8px;
-      line-height: 1.4;
-    }
-    .ask-debug-bubble.request { border-color: #2a7db7; }
-    .ask-debug-bubble.response { border-color: #267a64; }
-    .ask-debug-bubble.internal { border-color: #2a3e57; }
-    .ask-debug-bubble pre {
-      margin: 6px 0 0;
-      white-space: pre-wrap;
-      max-height: 220px;
-      overflow: auto;
-      font-size: 12px;
-    }
-    .ask-debug-connector-cell {
-      min-height: 20px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .ask-debug-arrow {
-      margin: 0;
-      color: var(--muted);
-      white-space: pre;
-      line-height: 1;
-      font-size: 11px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-      user-select: none;
-    }
-    .ask-debug-meta {
-      font-size: 12px;
-      color: var(--muted);
-      margin-bottom: 4px;
-    }
-    .ask-loading {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      color: var(--muted);
-      font-size: 13px;
-      min-height: 20px;
-      margin: 8px 0 0;
-    }
-    .spinner {
-      width: 14px;
-      height: 14px;
-      border: 2px solid #284868;
-      border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-    }
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-    .evidence {
-      margin-top: 8px;
-      border-top: 1px dashed var(--line);
-      padding-top: 8px;
-    }
-    .ask-shell {
-      display: grid;
-      grid-template-columns: minmax(0, 2.4fr) minmax(320px, 1fr);
-      gap: 12px;
-      min-height: calc(100vh - 210px);
-    }
-    .ask-workspace-panel {
-      min-height: 100%;
-    }
-    .ask-chat-panel {
-      display: grid;
-      grid-template-rows: auto 1fr auto;
-      min-height: 100%;
-    }
-    .ask-chat-thread {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #081627;
-      padding: 10px;
-      overflow: auto;
-      min-height: 520px;
-      max-height: calc(100vh - 320px);
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .ask-chat-bubble {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 8px 10px;
-      line-height: 1.45;
-      white-space: pre-wrap;
-      max-width: 100%;
-    }
-    .ask-chat-bubble.user {
-      align-self: flex-end;
-      background: #103154;
-      border-color: #2d6594;
-    }
-    .ask-chat-bubble.agent {
-      align-self: flex-start;
-      background: #0b2036;
-      border-color: #2a3e57;
-    }
-    .ask-chat-input-wrap {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 8px;
-      margin-top: 10px;
-    }
-    .ask-chat-note {
-      font-size: 12px;
-      color: var(--muted);
-      margin-bottom: 8px;
-    }
-    .evo-shell {
-      display: grid;
-      gap: 12px;
-    }
-    .evo-topbar {
-      display: grid;
-      grid-template-columns: minmax(320px, 1fr) minmax(220px, auto) auto auto;
-      gap: 8px;
-      align-items: center;
-    }
-    .evo-select-wrap {
-      display: grid;
-      gap: 6px;
-    }
-    .evo-select-note {
-      font-size: 12px;
-      color: var(--muted);
-    }
-    .evo-tabs {
-      display: inline-flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .evo-tab-btn {
-      padding: 6px 10px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      background: #0b213b;
-      color: var(--muted);
-      cursor: pointer;
-      font-size: 13px;
-    }
-    .evo-tab-btn.active {
-      border-color: var(--accent);
-      color: var(--text);
-      background: #0f2e4f;
-    }
-    .evo-kpi-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 10px;
-    }
-    .evo-kpi {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #0b2036;
-      padding: 10px;
-    }
-    .evo-kpi .label {
-      color: var(--muted);
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-    }
-    .evo-kpi .value {
-      margin-top: 4px;
-      font-size: 18px;
-      font-weight: 700;
-    }
-    .evo-grid-2 {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      gap: 12px;
-    }
-    .evo-grid-2-rail {
-      display: grid;
-      grid-template-columns: minmax(0, 1.6fr) minmax(320px, 1fr);
-      gap: 12px;
-    }
-    .evo-lineage {
-      min-height: 360px;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #081627;
-    }
-    .evo-runtime-strip {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 10px;
-    }
-    .preloop-shell {
-      display: grid;
-      grid-template-columns: minmax(220px, 300px) minmax(0, 1fr) minmax(260px, 320px);
-      gap: 12px;
-      align-items: start;
-    }
-    .preloop-queue-list {
-      max-height: 460px;
-      overflow: auto;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #081627;
-      padding: 8px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-    .preloop-item {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #0b2036;
-      padding: 8px;
-      cursor: pointer;
-      font-size: 12px;
-    }
-    .preloop-item.active {
-      border-color: var(--accent);
-      box-shadow: inset 0 0 0 1px rgba(70,192,255,0.5);
-    }
-    .preloop-card {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #081627;
-      padding: 10px;
-      min-height: 420px;
-      min-width: 0;
-    }
-    .preloop-actions {
-      display: grid;
-      gap: 8px;
-    }
-    .preloop-glossary {
-      display: grid;
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-    .preloop-glossary-card {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #0b2036;
-      padding: 10px;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .preloop-filter-grid {
-      display: grid;
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-    .preloop-count-blocks {
-      display: grid;
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-    .preloop-count-block {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #081627;
-      padding: 10px;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .preloop-stage-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(240px, 1fr));
-      gap: 10px;
-      margin-bottom: 10px;
-      align-items: start;
-    }
-    @media (max-width: 1080px) {
-      .preloop-stage-grid {
-        grid-template-columns: repeat(2, minmax(240px, 1fr));
-      }
-    }
-    @media (max-width: 760px) {
-      .preloop-stage-grid {
-        grid-template-columns: minmax(0, 1fr);
-      }
-    }
-    .preloop-stage-card {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: linear-gradient(180deg, #0b2036, #09192c);
-      padding: 12px;
-      box-shadow: var(--shadow);
-    }
-    .preloop-stage-card.ready {
-      border-color: rgba(57, 217, 138, 0.55);
-      box-shadow: inset 0 0 0 1px rgba(57, 217, 138, 0.18), var(--shadow);
-    }
-    .preloop-stage-card.blocked {
-      border-color: rgba(245, 173, 66, 0.4);
-    }
-    .preloop-stage-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-    .preloop-stage-title {
-      font-size: 15px;
-      font-weight: 700;
-      letter-spacing: 0.01em;
-    }
-    .preloop-stage-badge {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 72px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      padding: 4px 10px;
-      font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-    .preloop-stage-badge.ready {
-      color: var(--ok);
-      border-color: rgba(57, 217, 138, 0.55);
-      background: rgba(57, 217, 138, 0.08);
-    }
-    .preloop-stage-badge.blocked {
-      color: var(--warn);
-      border-color: rgba(245, 173, 66, 0.45);
-      background: rgba(245, 173, 66, 0.08);
-    }
-    .preloop-stage-group {
-      margin-top: 10px;
-    }
-    .preloop-stage-group:first-of-type {
-      margin-top: 0;
-    }
-    .preloop-stage-group-title {
-      color: var(--muted);
-      font-size: 11px;
-      margin-bottom: 6px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-    .preloop-stage-metric-list {
-      display: grid;
-      gap: 6px;
-    }
-    .preloop-stage-metric {
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 10px;
-      font-size: 12px;
-      line-height: 1.35;
-    }
-    .preloop-stage-metric strong {
-      font-size: 13px;
-      font-weight: 700;
-    }
-    .preloop-stage-blockers {
-      margin-top: 10px;
-      border-top: 1px solid rgba(31, 59, 96, 0.8);
-      padding-top: 10px;
-      display: grid;
-      gap: 6px;
-      font-size: 12px;
-      line-height: 1.35;
-      color: var(--muted);
-    }
-    .preloop-stage-blocker {
-      padding-left: 10px;
-      position: relative;
-    }
-    .preloop-stage-blocker::before {
-      content: "";
-      position: absolute;
-      left: 0;
-      top: 7px;
-      width: 4px;
-      height: 4px;
-      border-radius: 50%;
-      background: var(--warn);
-    }
-    .preloop-section {
-      margin-top: 12px;
-    }
-    .preloop-section:first-of-type {
-      margin-top: 0;
-    }
-    .preloop-section-title {
-      color: var(--muted);
-      font-size: 12px;
-      margin-bottom: 6px;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-    }
-    .preloop-evidence-list {
-      display: grid;
-      gap: 8px;
-    }
-    .preloop-evidence-card {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #0b2036;
-      padding: 10px;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .preloop-decision-group {
-      display: grid;
-      gap: 6px;
-    }
-    .preloop-button-row {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .preloop-choice-btn {
-      padding: 8px 12px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      background: #0b213b;
-      color: var(--muted);
-      cursor: pointer;
-      font-size: 13px;
-    }
-    .preloop-choice-btn.active {
-      border-color: var(--accent);
-      color: var(--text);
-      background: #11385e;
-    }
-    .preloop-bottom {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 8px;
-      align-items: center;
-      margin-top: 12px;
-    }
-    .ontology-shell {
-      display: grid;
-      grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
-      gap: 12px;
-      align-items: start;
-    }
-    .ontology-column {
-      display: grid;
-      gap: 12px;
-      min-width: 0;
-    }
-    .ontology-list {
-      max-height: 420px;
-      overflow: auto;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #081627;
-      padding: 8px;
-      display: grid;
-      gap: 8px;
-    }
-    .ontology-item {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #0b2036;
-      padding: 10px;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .ontology-item.active {
-      border-color: var(--accent);
-      box-shadow: inset 0 0 0 1px rgba(70,192,255,0.45);
-    }
-    .ontology-toolbar {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto auto;
-      gap: 8px;
-      align-items: center;
-      margin-bottom: 10px;
-    }
-    .ontology-filters {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-    .ontology-stat-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 8px;
-    }
-    .ontology-stat {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #0b2036;
-      padding: 10px;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .ontology-matrix-list {
-      display: grid;
-      gap: 8px;
-    }
-    .ontology-matrix-scroll {
-      margin-top: 10px;
-      max-height: 520px;
-      overflow: auto;
-      padding-right: 4px;
-    }
-    .ontology-pagination {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-top: 10px;
-    }
-    .ontology-pagination-meta {
-      color: var(--muted);
-      font-size: 12px;
-    }
-    .ontology-pagination-actions {
-      display: inline-flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .ontology-matrix-group {
-      display: grid;
-      gap: 8px;
-      margin-bottom: 12px;
-    }
-    .ontology-matrix-group:last-child {
-      margin-bottom: 0;
-    }
-    .ontology-matrix-group-title {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-      color: var(--muted);
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-    }
-    .ontology-matrix-group-grid {
-      display: grid;
-      gap: 8px;
-    }
-    .ontology-matrix-item {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #081627;
-      padding: 10px;
-      display: grid;
-      gap: 8px;
-      min-width: 0;
-    }
-    .ontology-matrix-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .ontology-matrix-title {
-      font-weight: 700;
-      line-height: 1.35;
-    }
-    .ontology-status-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 4px 10px;
-      font-size: 12px;
-      white-space: nowrap;
-      background: #0b2036;
-    }
-    .ontology-status-badge.supported {
-      border-color: #2d7f60;
-      color: #9fe5c4;
-    }
-    .ontology-status-badge.unsupported {
-      border-color: #7a5c2a;
-      color: #f0ce89;
-    }
-    .ontology-status-badge.mixed {
-      border-color: #2d6594;
-      color: #9fd1ff;
-    }
-    .ontology-matrix-stats {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
-    }
-    .ontology-matrix-stat {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #0b2036;
-      padding: 8px;
-      font-size: 12px;
-      line-height: 1.35;
-    }
-    .ontology-matrix-rationale {
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.45;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }
-    .ontology-list-block {
-      display: grid;
-      gap: 6px;
-      margin-top: 8px;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .ontology-list-item {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #0b2036;
-      padding: 8px;
-    }
-    .ontology-empty {
-      color: var(--muted);
-      font-size: 12px;
-      padding: 8px 0;
-    }
-    .ontology-pill-row {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-top: 8px;
-    }
-    .ontology-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      background: #0b2036;
-      padding: 6px 10px;
-      font-size: 12px;
-    }
-    .runctl-actions {
-      display: inline-flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .runctl-log {
-      margin-top: 10px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #081627;
-      padding: 10px;
-      min-height: 220px;
-      max-height: 360px;
-      overflow: auto;
-      white-space: pre-wrap;
-      font-size: 12px;
-      line-height: 1.4;
-    }
-    details { border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
-    summary { cursor: pointer; color: var(--accent); }
-    @media (max-width: 960px) {
-      .layout { grid-template-columns: 1fr; }
-      .rail { border-right: 0; border-bottom: 1px solid var(--line); }
-      .topbar { grid-template-columns: 1fr 1fr; }
-      .ask-shell { grid-template-columns: 1fr; }
-      .ask-chat-panel { order: -1; }
-      .ask-chat-thread { min-height: 360px; max-height: 50vh; }
-      .evo-grid-2,
-      .evo-grid-2-rail,
-      .preloop-shell,
-      .ontology-shell {
-        grid-template-columns: 1fr;
-      }
-      .preloop-bottom {
-        grid-template-columns: 1fr;
-      }
-    }
-  </style>
-</head>
-<body>
-  <section id="loginPage">
-    <div class="login-card">
-      <h1>OpenBrain 360</h1>
-      <p>Personal memory cockpit. Login is required on every open/refresh.</p>
-      <form id="loginForm">
-        <input id="passwordInput" type="password" placeholder="Password" required style="width:100%; margin-bottom:10px;" />
-        <button type="submit" style="width:100%;">Login</button>
-      </form>
-      <div class="error" id="loginError"></div>
-    </div>
-  </section>
-
-  <section id="appPage">
-    <div class="layout">
-      <aside class="rail">
-        <div class="brand">OpenBrain 360</div>
-        <button class="nav-btn active" data-module="brief">Brief</button>
-        <button class="nav-btn" data-module="ask">Ask</button>
-        <button class="nav-btn" data-module="evolution">Evolution</button>
-        <button class="nav-btn" data-module="people">People</button>
-        <button class="nav-btn" data-module="behavior">Behavior</button>
-        <button class="nav-btn" data-module="timeline">Timeline</button>
-        <button class="nav-btn" data-module="insights">Insights</button>
-        <button class="nav-btn" data-module="ops">Ops</button>
-        <button class="nav-btn" data-module="settings">Settings</button>
-      </aside>
-      <main class="content">
-        <div class="topbar">
-          <input id="globalQuestion" placeholder="Ask anything about your memory..." />
-          <select id="timeframeSelect">
-            <option value="7d">7d</option>
-            <option value="30d" selected>30d</option>
-            <option value="90d">90d</option>
-            <option value="365d">365d</option>
-            <option value="all">all</option>
-          </select>
-          <select id="privacyModeSelect">
-            <option value="private">Private</option>
-            <option value="share_safe">Share-Safe</option>
-            <option value="demo">Demo</option>
-          </select>
-          <button id="askButton">Ask</button>
-          <div id="askLoading" class="ask-loading hidden"><span class="spinner"></span><span>Processing question...</span></div>
-          <button id="lockButton">Lock</button>
-        </div>
-        <div class="panel-wrap">
-          <section id="module-brief">
-            <div class="panel">
-              <h3>Daily Brief <span id="modeBadge" class="badge mode-private">private</span></h3>
-              <div class="grid" id="briefMetrics"></div>
-            </div>
-            <div class="panel"><div id="briefChart" class="chart"></div></div>
-          </section>
-
-          <section id="module-ask" class="hidden">
-            <div class="ask-shell">
-              <div class="panel ask-workspace-panel">
-                <h3>Ask Workspace</h3>
-                <div class="ask-tabs">
-                  <button id="askTabAnswer" class="ask-tab-btn active" type="button">Answer</button>
-                  <button id="askTabDebug" class="ask-tab-btn" type="button">Agent Debug Mode</button>
-                </div>
-                <div id="askPanelAnswer">
-                  <div class="ask-answer" id="askAnswer">Ask a question in the right chat panel.</div>
-                  <details class="evidence">
-                    <summary>Evidence</summary>
-                    <div id="askEvidence" class="muted">No evidence yet.</div>
-                  </details>
-                </div>
-                <div id="askPanelDebug" class="hidden">
-                  <div id="askDebugSummary" class="muted">Run a question to view agent orchestration flow.</div>
-                  <div id="askDebugFlow" class="ask-debug-flow muted">No debug steps yet.</div>
-                </div>
-              </div>
-              <div class="panel ask-chat-panel">
-                <h3>Chat</h3>
-                <div id="askChatNote" class="ask-chat-note">Ask here. If clarification is needed, answer the follow-up to continue.</div>
-                <div id="askChatThread" class="ask-chat-thread">
-                  <div class="ask-chat-bubble agent">I am ready. Ask a question.</div>
-                </div>
-                <div class="ask-chat-input-wrap">
-                  <input id="askChatInput" placeholder="Type your question..." />
-                  <button id="askChatSend" type="button">Send</button>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section id="module-evolution" class="hidden">
-            <div class="evo-shell">
-              <div class="panel">
-                <div class="evo-topbar">
-                  <div class="evo-select-wrap">
-                    <select id="evoExperimentSelect"></select>
-                    <div id="evoExperimentMeta" class="evo-select-note">No experiment loaded.</div>
-                  </div>
-                  <input id="evoExperimentSearch" placeholder="Filter experiments..." />
-                  <button id="evoUseLatest" type="button">Use Latest</button>
-                  <button id="evoRefreshAll" type="button">Refresh</button>
-                </div>
-                <div class="evo-tabs" style="margin-top:10px;">
-                  <button id="evoTabOverview" class="evo-tab-btn active" type="button">Overview</button>
-                  <button id="evoTabOntology" class="evo-tab-btn" type="button">Ontology Review</button>
-                  <button id="evoTabPreloop" class="evo-tab-btn" type="button">Pre-Loop Calibration</button>
-                  <button id="evoTabRunControl" class="evo-tab-btn" type="button">Run Control</button>
-                </div>
-              </div>
-
-              <div id="evoPanelOverview" class="panel">
-                <h3>Strategy Evolution</h3>
-                <div id="evoKpiGrid" class="evo-kpi-grid"></div>
-                <div class="evo-grid-2" style="margin-top:12px;">
-                  <div class="panel"><h4>Performance Frontier</h4><div id="evoFrontierChart" class="chart"></div></div>
-                  <div class="panel"><h4>Learning Velocity</h4><div id="evoVelocityChart" class="chart"></div></div>
-                </div>
-                <div class="evo-grid-2" style="margin-top:12px;">
-                  <div class="panel"><h4>Failure Distribution</h4><div id="evoFailuresChart" class="chart"></div></div>
-                  <div class="panel"><h4>Component Heatmap</h4><div id="evoHeatmapChart" class="chart"></div></div>
-                </div>
-                <div class="evo-grid-2-rail" style="margin-top:12px;">
-                  <div class="panel">
-                    <h4>Hypothesis + Diversity</h4>
-                    <div class="evo-grid-2">
-                      <div><div id="evoHypothesisChart" class="chart"></div></div>
-                      <div><div id="evoDiversityChart" class="chart"></div></div>
-                    </div>
-                  </div>
-                  <div class="panel">
-                    <h4>Lineage + Selected</h4>
-                    <div id="evoLineageGraph" class="evo-lineage"></div>
-                    <div id="evoStrategyDetail" class="muted" style="margin-top:10px;">Select a frontier point to inspect details.</div>
-                  </div>
-                </div>
-                <div class="panel" style="margin-top:12px;">
-                  <h4>Coverage + Runtime Health</h4>
-                  <div id="evoCoverageSummary" class="muted" style="margin-bottom:8px;">No coverage data yet.</div>
-                  <div id="evoRuntimeStrip" class="evo-runtime-strip"></div>
-                </div>
-              </div>
-
-              <div id="evoPanelOntology" class="panel hidden">
-                <h3>Ontology Review</h3>
-                <div class="ontology-toolbar">
-                  <select id="ontologyVersionSelect"></select>
-                  <button id="ontologyUseExperimentVersion" type="button">Use Experiment Version</button>
-                  <button id="ontologyRefreshButton" type="button">Refresh</button>
-                </div>
-                <div class="ontology-shell">
-                  <div class="ontology-column">
-                    <div class="panel">
-                      <h4>Operations</h4>
-                      <div class="runctl-actions">
-                        <button id="ontologyScanSupportButton" type="button">Run Support Scan</button>
-                        <button id="ontologyGenerateCandidatesButton" type="button">Generate Candidates</button>
-                        <button id="ontologyPublishButton" type="button">Publish Version</button>
-                        <button id="ontologyReseedBenchmarkButton" type="button">Regenerate Benchmark</button>
-                        <button id="ontologyRebuildCalibrationButton" type="button">Rebuild Calibration Queue</button>
-                        <button id="ontologyExportButton" type="button">Export Review</button>
-                      </div>
-                      <div id="ontologyActionMsg" class="muted" style="margin-top:8px;">No ontology action yet.</div>
-                    </div>
-                    <div class="panel">
-                      <h4>Support Summary</h4>
-                      <div id="ontologySupportSummary" class="ontology-stat-grid"></div>
-                    </div>
-                  </div>
-                  <div class="ontology-column">
-                    <div class="panel">
-                      <h4>Candidate Queue</h4>
-                      <div class="ontology-filters">
-                        <select id="ontologyCandidateTypeFilter">
-                          <option value="">all candidate types</option>
-                          <option value="new_domain_candidate">new domain</option>
-                          <option value="new_lens_candidate">new lens</option>
-                          <option value="merge_candidate">merge</option>
-                          <option value="split_candidate">split</option>
-                          <option value="unmapped_cluster">unmapped cluster</option>
-                        </select>
-                        <select id="ontologyCandidateStatusFilter">
-                          <option value="">all statuses</option>
-                          <option value="pending">pending</option>
-                          <option value="approved">approved</option>
-                          <option value="deferred">deferred</option>
-                          <option value="rejected">rejected</option>
-                        </select>
-                        <input id="ontologyCandidateSearch" placeholder="filter by title/domain/lens..." />
-                      </div>
-                      <div class="runctl-actions" style="margin-bottom:8px;">
-                        <button id="ontologyBatchApproveButton" type="button">Approve Visible</button>
-                        <button id="ontologyBatchRejectButton" type="button">Reject Visible</button>
-                        <button id="ontologyBatchDeferButton" type="button">Defer Visible</button>
-                      </div>
-                      <div id="ontologyCandidateList" class="ontology-list"></div>
-                    </div>
-                    <div class="panel">
-                      <h4>Draft Taxonomy</h4>
-                      <div id="ontologyDraftSummary"></div>
-                    </div>
-                    <div class="panel">
-                      <h4>Benchmark Freshness</h4>
-                      <div id="ontologyFreshness"></div>
-                    </div>
-                    <div class="panel">
-                      <h4>Metadata / Facet Coverage</h4>
-                      <div class="ontology-filters">
-                        <select id="ontologyFacetTypeFilter">
-                          <option value="">all facet types</option>
-                          <option value="actor_name">actor names</option>
-                          <option value="group_label">group labels</option>
-                          <option value="thread_title">thread titles</option>
-                          <option value="source_system">source systems</option>
-                          <option value="month_bucket">month buckets</option>
-                        </select>
-                        <select id="ontologyFacetStatusFilter">
-                          <option value="">all coverage states</option>
-                          <option value="gap">gaps</option>
-                          <option value="covered">covered</option>
-                          <option value="sparse">sparse</option>
-                        </select>
-                      </div>
-                      <div id="ontologyFacetSummary" class="ontology-stat-grid" style="margin-bottom:10px;"></div>
-                      <div class="ontology-pagination">
-                        <div id="ontologyFacetPageMeta" class="ontology-pagination-meta">Page 1 of 1</div>
-                        <div class="ontology-pagination-actions">
-                          <button id="ontologyFacetPrevButton" type="button">Previous</button>
-                          <button id="ontologyFacetNextButton" type="button">Next</button>
-                        </div>
-                      </div>
-                      <div id="ontologyFacetCoverage"></div>
-                    </div>
-                    <div class="panel">
-                      <h4>Support Matrix</h4>
-                      <div class="ontology-pagination">
-                        <div id="ontologyMatrixPageMeta" class="ontology-pagination-meta">Page 1 of 1</div>
-                        <div class="ontology-pagination-actions">
-                          <button id="ontologyMatrixPrevButton" type="button">Previous</button>
-                          <button id="ontologyMatrixNextButton" type="button">Next</button>
-                        </div>
-                      </div>
-                      <div id="ontologySupportMatrix"></div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div id="evoPanelPreloop" class="panel hidden">
-                <h3>Pre-Loop Calibration</h3>
-                <div class="preloop-shell">
-                  <div class="panel">
-                    <h4>Queue</h4>
-                    <div class="preloop-glossary">
-                      <div class="preloop-glossary-card" id="preloopGlossaryAmbiguity"></div>
-                      <div class="preloop-glossary-card" id="preloopGlossarySets"></div>
-                    </div>
-                    <div class="preloop-count-blocks">
-                      <div id="preloopQueueCounts" class="preloop-count-block">Queue now not loaded.</div>
-                      <div id="preloopDatasetCounts" class="preloop-count-block">Dataset totals not loaded.</div>
-                      <div id="preloopAuthoringCounts" class="preloop-count-block">Authoring totals not loaded.</div>
-                    </div>
-                    <div class="preloop-filter-grid">
-                      <select id="preloopStatusFilter">
-                        <option value="pending">pending only</option>
-                        <option value="labeled">reviewed only</option>
-                        <option value="all">all items</option>
-                      </select>
-                      <select id="preloopVerdictFilter">
-                        <option value="">all verdicts</option>
-                        <option value="yes">yes</option>
-                        <option value="no">no</option>
-                      </select>
-                      <select id="preloopDomainFilter">
-                        <option value="">all domains</option>
-                      </select>
-                      <select id="preloopAmbiguityFilter">
-                        <option value="">all ambiguity classes</option>
-                        <option value="clear">clear</option>
-                        <option value="clarify_required">clarify required</option>
-                        <option value="unresolved">unresolved</option>
-                      </select>
-                      <select id="preloopCaseSetFilter">
-                        <option value="">all sets</option>
-                        <option value="dev">dev</option>
-                        <option value="critical">critical</option>
-                        <option value="certification">certification</option>
-                        <option value="stress">stress</option>
-                        <option value="coverage">coverage</option>
-                      </select>
-                    </div>
-                    <div style="display:grid; grid-template-columns:1fr; gap:8px; margin-bottom:8px;">
-                      <input id="preloopSampleCount" type="number" min="1" max="200" value="20" />
-                    </div>
-                    <button id="preloopGenerateSample" type="button" style="width:100%; margin-bottom:8px;">Generate Sample</button>
-                    <button id="preloopAutoReview" type="button" style="width:100%; margin-bottom:8px;">Generate AI Suggestions</button>
-                    <div id="preloopQueueList" class="preloop-queue-list"></div>
-                  </div>
-                  <div class="preloop-card">
-                    <h4>Case Review</h4>
-                    <div id="preloopCaseMeta" class="muted">Select a case.</div>
-                    <div class="preloop-section">
-                      <div class="preloop-section-title">Question</div>
-                      <div id="preloopQuestionText"></div>
-                    </div>
-                    <div class="preloop-section">
-                      <div class="preloop-section-title">Expected behavior</div>
-                      <div id="preloopExpectedBehavior"></div>
-                    </div>
-                    <div class="preloop-section">
-                      <div class="preloop-section-title">Semantic frame</div>
-                      <div id="preloopSemanticFrame"></div>
-                    </div>
-                    <div class="preloop-section">
-                      <div class="preloop-section-title">Clarification path</div>
-                      <div id="preloopClarificationPath"></div>
-                    </div>
-                    <div class="preloop-section">
-                      <div class="preloop-section-title">Expected answer summary</div>
-                      <div id="preloopExpectedAnswer"></div>
-                    </div>
-                    <div class="preloop-section">
-                      <div class="preloop-section-title">Evidence</div>
-                      <div id="preloopEvidencePreview" class="preloop-evidence-list"></div>
-                    </div>
-                    <div class="preloop-section">
-                      <div class="preloop-section-title">Admission</div>
-                      <div id="preloopAdmission"></div>
-                    </div>
-                    <div class="preloop-section">
-                      <div class="preloop-section-title">Quality gate</div>
-                      <div id="preloopQualityGate"></div>
-                    </div>
-                  </div>
-                  <div class="panel preloop-actions">
-                    <h4>Decision</h4>
-                    <div class="preloop-section">
-                      <div class="preloop-section-title">AI suggestion</div>
-                      <div id="preloopSuggestedReview" class="muted">No AI suggestion yet.</div>
-                    </div>
-                    <div class="preloop-decision-group">
-                      <div class="preloop-section-title">Verdict</div>
-                      <div class="preloop-button-row" id="preloopVerdictGroup">
-                        <button id="preloopVerdictYes" class="preloop-choice-btn active" data-value="yes" type="button">Yes</button>
-                        <button id="preloopVerdictNo" class="preloop-choice-btn" data-value="no" type="button">No</button>
-                      </div>
-                    </div>
-                    <div class="preloop-decision-group">
-                      <div class="preloop-section-title">Ambiguity class</div>
-                      <div class="preloop-button-row" id="preloopAmbiguityGroup">
-                        <button id="preloopAmbiguityClear" class="preloop-choice-btn active" data-value="clear" type="button">Clear</button>
-                        <button id="preloopAmbiguityClarify" class="preloop-choice-btn" data-value="clarify_required" type="button">Clarify required</button>
-                        <button id="preloopAmbiguityUnresolved" class="preloop-choice-btn" data-value="unresolved" type="button">Unresolved</button>
-                      </div>
-                    </div>
-                    <textarea id="preloopNotes" rows="8" placeholder="Notes..."></textarea>
-                    <button id="preloopSaveNext" type="button">Save + Next</button>
-                    <div id="preloopActionMsg" class="muted"></div>
-                  </div>
-                </div>
-                <div class="preloop-bottom">
-                  <div id="preloopStageReadiness" class="muted" style="margin-bottom:8px;">Stage readiness: not loaded.</div>
-                  <div id="preloopReadinessBar" class="muted">Readiness: not loaded.</div>
-                </div>
-              </div>
-
-              <div id="evoPanelRunControl" class="panel hidden">
-                <h3>Run Control</h3>
-                <div id="runControlSummary" class="muted">No experiment selected.</div>
-                <div class="runctl-actions" style="margin-top:8px;">
-                  <select id="runControlLockStage">
-                    <option value="core_ready">Core-ready lock</option>
-                    <option value="selection_ready">Selection-ready lock</option>
-                    <option value="certification_ready">Certification-ready lock</option>
-                  </select>
-                  <button id="runControlLockBenchmark" type="button" disabled>Lock Benchmark</button>
-                  <button id="runControlStartLoop" type="button" disabled>Start Loop</button>
-                  <button id="runControlRunStep" type="button">Run Single Step</button>
-                  <button id="runControlStopLoop" type="button">Stop Loop</button>
-                </div>
-                <div id="runControlLog" class="runctl-log">Waiting.</div>
-              </div>
-            </div>
-          </section>
-
-          <section id="module-people" class="hidden">
-            <div class="panel people-panel">
-              <h3>Relationship Network</h3>
-              <div id="peopleGraph" class="graph"></div>
-            </div>
-          </section>
-
-          <section id="module-behavior" class="hidden">
-            <div class="panel">
-              <h3>Behavior Trends</h3>
-              <div id="behaviorChart" class="chart"></div>
-            </div>
-          </section>
-
-          <section id="module-timeline" class="hidden">
-            <div class="panel">
-              <h3>Timeline</h3>
-              <div id="timelineList" class="muted"></div>
-            </div>
-          </section>
-
-          <section id="module-insights" class="hidden">
-            <div class="panel">
-              <h3>Insight Feed</h3>
-              <div id="insightFeed"></div>
-            </div>
-          </section>
-
-          <section id="module-ops" class="hidden">
-            <div class="panel">
-              <h3>Pipeline and Jobs</h3>
-              <div style="margin-bottom:8px;">
-                <button id="pruneOpsButton">Prune Logs (60d)</button>
-              </div>
-              <div id="opsJobs" class="muted"></div>
-            </div>
-          </section>
-
-          <section id="module-settings" class="hidden">
-            <div class="panel">
-              <h3>Settings</h3>
-              <p class="muted">Login on refresh is enforced by design. Privacy mode is server-side and session-scoped.</p>
-              <div style="display:grid; gap:8px; max-width:420px; margin-bottom:12px;">
-                <input id="currentPasswordInput" type="password" placeholder="Current password" />
-                <input id="newPasswordInput" type="password" placeholder="New password (min 8 chars)" />
-                <button id="rotatePasswordButton">Rotate Password</button>
-                <div id="rotatePasswordResult" class="muted"></div>
-              </div>
-              <button id="logoutButton">Logout</button>
-            </div>
-          </section>
-        </div>
-      </main>
-    </div>
-  </section>
-
-  <script>
-    (() => {
-      const SESSION_STORAGE_TOKEN_KEY = "openbrain.authToken";
+(() => {
       const state = {
         token: "",
-        authSeq: 0,
-        sessionKeepaliveTimer: null,
         chatNamespace: "personal.main",
         privacyMode: "private",
         timeframe: "30d",
         module: "brief",
         askTab: "answer",
         askLoading: false,
-        loginInProgress: false,
         lastAnswerRunId: "",
         pendingQuestion: "",
         awaitingClarification: false,
@@ -1457,44 +62,6 @@ export function renderAppHtml(): string {
         }
       };
 
-      function persistSessionToken() {
-        try {
-          if (state.token) {
-            window.sessionStorage.setItem(SESSION_STORAGE_TOKEN_KEY, state.token);
-          } else {
-            window.sessionStorage.removeItem(SESSION_STORAGE_TOKEN_KEY);
-          }
-        } catch {}
-      }
-
-      function restoreStoredSessionToken() {
-        try {
-          const stored = String(window.sessionStorage.getItem(SESSION_STORAGE_TOKEN_KEY) || "").trim();
-          return stored;
-        } catch {
-          return "";
-        }
-      }
-
-      function setSessionToken(token) {
-        state.token = String(token || "").trim();
-        state.authSeq += 1;
-        persistSessionToken();
-      }
-
-      function getAuthSnapshot() {
-        return {
-          token: state.token,
-          authSeq: state.authSeq
-        };
-      }
-
-      function isAuthSnapshotCurrent(snapshot) {
-        return Boolean(snapshot)
-          && snapshot.authSeq === state.authSeq
-          && snapshot.token === state.token;
-      }
-
       const byId = (id) => document.getElementById(id);
       const loginPage = byId("loginPage");
       const appPage = byId("appPage");
@@ -1511,58 +78,14 @@ export function renderAppHtml(): string {
           .replaceAll(">", "&gt;");
       }
 
-      function clearSessionKeepalive() {
-        if (state.sessionKeepaliveTimer) {
-          clearInterval(state.sessionKeepaliveTimer);
-          state.sessionKeepaliveTimer = null;
-        }
-      }
-
-      function startSessionKeepalive() {
-        clearSessionKeepalive();
-        if (!state.token) return;
-        state.sessionKeepaliveTimer = setInterval(async () => {
-          if (document.hidden || !state.token) return;
-          try {
-            await api("/v1/auth/session", { method: "GET" });
-          } catch (error) {
-            console.error(error);
-          }
-        }, 240000);
-      }
-
       async function api(path, options = {}, requiresSession = true) {
         const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-        const requestAuth = getAuthSnapshot();
-        if (requiresSession && requestAuth.token) {
-          headers.Authorization = "Bearer " + requestAuth.token;
+        if (requiresSession && state.token) {
+          headers.Authorization = "Bearer " + state.token;
         }
         const response = await fetch(path, { ...options, headers });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
-          if (requiresSession && response.status === 401) {
-            let sessionStillValid = false;
-            if (path !== "/v1/auth/session" && requestAuth.token) {
-              try {
-                const probe = await fetch("/v1/auth/session", {
-                  method: "GET",
-                  headers: {
-                    "Content-Type": "application/json",
-                    Authorization: "Bearer " + requestAuth.token
-                  }
-                });
-                sessionStillValid = probe.ok;
-              } catch {}
-            }
-            const message = payload.error || "Session expired. Please log in again.";
-            if (!sessionStillValid && isAuthSnapshotCurrent(requestAuth)) {
-              clearEvolutionPolling();
-              clearSessionKeepalive();
-              loginError.textContent = message;
-              showLogin();
-            }
-            throw new Error(sessionStillValid ? (String(path) + ": " + message) : message);
-          }
           throw new Error(payload.error || ("HTTP " + response.status));
         }
         return payload;
@@ -1624,13 +147,10 @@ export function renderAppHtml(): string {
       function showApp() {
         loginPage.style.display = "none";
         appPage.style.display = "block";
-        loginError.textContent = "";
-        startSessionKeepalive();
       }
 
       function showLogin() {
-        setSessionToken("");
-        clearSessionKeepalive();
+        state.token = "";
         loginPage.style.display = "grid";
         appPage.style.display = "none";
       }
@@ -1646,7 +166,7 @@ export function renderAppHtml(): string {
         const profile = await api("/v1/brain/profile?chatNamespace=" + encodeURIComponent(state.chatNamespace) + "&timeframe=" + state.timeframe);
         const metrics = byId("briefMetrics");
         const domains = Array.isArray(profile.topDomains) ? profile.topDomains.slice(0, 6) : [];
-        metrics.innerHTML = domains.map((d) => \`<div class="metric"><span class="muted">\${d.domain}</span><b>\${Math.round(d.total || 0)}</b></div>\`).join("");
+        metrics.innerHTML = domains.map((d) => `<div class="metric"><span class="muted">${d.domain}</span><b>${Math.round(d.total || 0)}</b></div>`).join("");
 
         const chartPayload = await api("/v1/brain/insights?chatNamespace=" + encodeURIComponent(state.chatNamespace) + "&timeframe=" + state.timeframe);
         const chartData = pickChart(chartPayload, "brief-domain-weekly");
@@ -1734,9 +254,9 @@ export function renderAppHtml(): string {
         }
         list.innerHTML = rows.slice(0, 80).map((item) => {
           const chips = Array.isArray(item.domains) && item.domains.length > 0
-            ? item.domains.map((d) => \`<span class="timeline-chip">\${d}</span>\`).join("")
-            : \`<span class="timeline-chip">\${item.domain}</span>\`;
-          return \`<div class="timeline-item"><div>\${chips}<span class="muted">\${fmtDate(item.sourceTimestamp)}</span></div><div>\${item.text}</div></div>\`;
+            ? item.domains.map((d) => `<span class="timeline-chip">${d}</span>`).join("")
+            : `<span class="timeline-chip">${item.domain}</span>`;
+          return `<div class="timeline-item"><div>${chips}<span class="muted">${fmtDate(item.sourceTimestamp)}</span></div><div>${item.text}</div></div>`;
         }).join("");
       }
 
@@ -1748,7 +268,7 @@ export function renderAppHtml(): string {
           ? '<div class="muted">No insight snapshots yet.</div>'
           : rows.map((r) => {
               const action = r.action ? '<p><b>Action:</b> ' + r.action + '</p>' : '';
-              return \`<div class="panel" style="margin:8px 0;"><h4>\${r.title}</h4><div class="muted">confidence: \${Math.round((r.confidence || 0) * 100)}%</div><p>\${r.summary}</p>\${action}</div>\`;
+              return `<div class="panel" style="margin:8px 0;"><h4>${r.title}</h4><div class="muted">confidence: ${Math.round((r.confidence || 0) * 100)}%</div><p>${r.summary}</p>${action}</div>`;
             }).join("");
       }
 
@@ -1758,7 +278,7 @@ export function renderAppHtml(): string {
         const el = byId("opsJobs");
         el.innerHTML = jobs.length === 0
           ? "No jobs."
-          : jobs.map((j) => \`<div style="padding:6px 0;border-bottom:1px solid #1f3b60;">\${j.jobType} - \${j.status} - queued \${j.queuedItems} - done \${j.processedItems} - failed \${j.failedItems}</div>\`).join("");
+          : jobs.map((j) => `<div style="padding:6px 0;border-bottom:1px solid #1f3b60;">${j.jobType} - ${j.status} - queued ${j.queuedItems} - done ${j.processedItems} - failed ${j.failedItems}</div>`).join("");
       }
 
       async function loadAskDebug(answerRunId) {
@@ -1775,14 +295,14 @@ export function renderAppHtml(): string {
         const prettyJson = (value) => {
           const raw = JSON.stringify(value ?? {}, null, 2);
           if (raw.length <= 12000) return raw;
-          return raw.slice(0, 12000) + "\\n... (truncated)";
+          return raw.slice(0, 12000) + "\n... (truncated)";
         };
         const connectorRow = (fromIdx, toIdx, laneCount, columnsStyle) => {
           const cells = [];
           if (fromIdx === toIdx) {
             for (let idx = 0; idx < laneCount; idx += 1) {
               if (idx === fromIdx) {
-                cells.push('<div class="ask-debug-connector-cell"><pre class="ask-debug-arrow">|\\nv</pre></div>');
+                cells.push('<div class="ask-debug-connector-cell"><pre class="ask-debug-arrow">|\nv</pre></div>');
               } else {
                 cells.push('<div class="ask-debug-connector-cell"></div>');
               }
@@ -1880,7 +400,7 @@ export function renderAppHtml(): string {
         lanes.forEach((lane, idx) => laneIndex.set(lane, idx));
         const columnsStyle = 'repeat(' + lanes.length + ', minmax(220px, 1fr))';
         byId("askDebugSummary").innerHTML =
-          \`Run <b>\${escapeHtml(run.id || answerRunId)}</b> | status <b>\${escapeHtml(run.status || "n/a")}</b> | decision <b>\${escapeHtml(run.decision || "n/a")}</b> | started \${escapeHtml(fmtDate(run.created_at))} | lanes <b>\${lanes.length}</b> | events <b>\${events.length}</b>\`;
+          `Run <b>${escapeHtml(run.id || answerRunId)}</b> | status <b>${escapeHtml(run.status || "n/a")}</b> | decision <b>${escapeHtml(run.decision || "n/a")}</b> | started ${escapeHtml(fmtDate(run.created_at))} | lanes <b>${lanes.length}</b> | events <b>${events.length}</b>`;
         byId("askDebugFlow").innerHTML = events.length === 0
           ? "No debug steps recorded."
           : (() => {
@@ -1964,7 +484,7 @@ export function renderAppHtml(): string {
           });
           blocks.push("Constraint checks: " + lines.join(" | "));
         }
-        byId("askAnswer").textContent = blocks.join("\\n\\n");
+        byId("askAnswer").textContent = blocks.join("\n\n");
       }
 
       async function ask(question, clarificationResponse = null) {
@@ -2015,10 +535,10 @@ export function renderAppHtml(): string {
                   ? r.sourceMessageId
                   : "n/a";
               const excerpt = typeof r.excerpt === "string" ? r.excerpt : "";
-              return \`<div style="padding:6px 0;border-bottom:1px dashed #1f3b60;">\` +
-                \`[\${pct}%] <span class="muted">\${escapeHtml(String(evidenceRole))} | \${escapeHtml(String(entity))} | \${escapeHtml(String(ts))}</span>\` +
-                \`<br/><span class="muted">conv=\${escapeHtml(String(convId))} | msg=\${escapeHtml(String(msgId))}</span>\` +
-                \`<br/>\${escapeHtml(excerpt)}</div>\`;
+              return `<div style="padding:6px 0;border-bottom:1px dashed #1f3b60;">` +
+                `[${pct}%] <span class="muted">${escapeHtml(String(evidenceRole))} | ${escapeHtml(String(entity))} | ${escapeHtml(String(ts))}</span>` +
+                `<br/><span class="muted">conv=${escapeHtml(String(convId))} | msg=${escapeHtml(String(msgId))}</span>` +
+                `<br/>${escapeHtml(excerpt)}</div>`;
             }).join("");
 
           if (answerPayload && typeof answerPayload === "object" && String(answerPayload.decision || "") === "clarify_first") {
@@ -2585,14 +1105,6 @@ export function renderAppHtml(): string {
           evolutionKpiCard("Authoring Unresolved", String(Number(k.authoringUnresolvedCount || 0))),
           evolutionKpiCard("Verifier Pass", (Number(k.verifierPassRate || 0) * 100).toFixed(1) + "%"),
           evolutionKpiCard("Calibration Eligible", String(Number(k.calibrationEligibleCount || 0))),
-          evolutionKpiCard("Human Share", (Number(k.humanCaseShare || 0) * 100).toFixed(1) + "%"),
-          evolutionKpiCard("Assistant Share", (Number(k.assistantCaseShare || 0) * 100).toFixed(1) + "%"),
-          evolutionKpiCard("Direct 1:1", String(Number(k.direct1to1Coverage || 0))),
-          evolutionKpiCard("Group Chats", String(Number(k.groupChatCoverage || 0))),
-          evolutionKpiCard("3rd-Party", String(Number(k.thirdPartyCoverage || 0))),
-          evolutionKpiCard("Human Actors", String(Number(k.distinctHumanActors || 0))),
-          evolutionKpiCard("Human Groups", String(Number(k.distinctHumanGroups || 0))),
-          evolutionKpiCard("Families", String(Number(k.distinctConversationFamilies || 0))),
           evolutionKpiCard("Leakage Events", String(Number(k.leakageCount || 0))),
           evolutionKpiCard("Timeouts", String(Number(k.timeoutCount || 0)), "recoveries " + String(Number(k.timeoutRecoveries || 0)))
         ].join("");
@@ -3170,88 +1682,36 @@ export function renderAppHtml(): string {
           + "Accepted " + Number(authoringCounts.accepted || 0)
           + " | Rejected " + Number(authoringCounts.rejected || 0)
           + " | Unresolved " + Number(authoringCounts.unresolved || 0);
-        const stageReadinessCards = ["core_ready", "selection_ready", "certification_ready"].map((key) => {
-          const label = key === "core_ready"
-            ? "Core"
-            : key === "selection_ready"
-              ? "Selection"
-              : "Certification";
+        const stageLabels = [
+          ["core_ready", "Core"],
+          ["selection_ready", "Selection"],
+          ["certification_ready", "Certification"]
+        ];
+        byId("preloopStageReadiness").innerHTML = stageLabels.map(([key, label]) => {
           const item = stageReadiness?.[key] || {};
-          const isReady = Boolean(item.pass);
-          const blockers = Array.isArray(item.blockers) ? item.blockers : [];
-          const statusText = isReady ? "ready" : "blocked";
-          const blockerRows = blockers.length > 0
-            ? blockers
-              .map((row) => '<div class="preloop-stage-blocker">' + escapeHtml(String(row)) + "</div>")
-              .join("")
+          const blockers = Array.isArray(item.blockers) && item.blockers.length > 0
+            ? " | " + escapeHtml(item.blockers.join(" ; "))
             : "";
-          const blockerRowsHtml = blockerRows ? '<div class="preloop-stage-blockers">' + blockerRows + "</div>" : "";
-          const threshold = item.thresholds || {};
-          const pendingOwnerValue = Number(
-            key === "core_ready"
-              ? (lockCounts.pendingOwnerInCoreSlice || 0)
-              : (lockCounts.pendingOwnerInSelectionSlice || 0)
-          );
-          const pendingCalibrationValue = Number(
-            key === "core_ready"
-              ? (lockCounts.pendingCalibrationInCoreSlice || 0)
-              : (lockCounts.pendingCalibrationInSelectionSlice || 0)
-          );
-          const statusClass = isReady ? "ready" : "blocked";
-          return '<article class="preloop-stage-card ' + statusClass + '">'
-            + '<div class="preloop-stage-head">'
-            + '<div class="preloop-stage-title">' + label + '</div>'
-            + '<div class="preloop-stage-badge ' + statusClass + '">' + statusText + '</div>'
-            + '</div>'
-            + '<div class="preloop-stage-group">'
-            + '<div class="preloop-stage-group-title">Readiness</div>'
-            + '<div class="preloop-stage-metric-list">'
-            + '<div class="preloop-stage-metric"><span>Owner reviewed</span><strong>' + Number(lockCounts.ownerReviewedTotal || 0) + ' / ' + (Number(threshold.ownerReviewedTotalMin || 0) || "&mdash;") + '</strong></div>'
-            + '<div class="preloop-stage-metric"><span>Reviewed yes</span><strong>' + Number(lockCounts.ownerApprovedYes || 0) + ' / ' + (Number(threshold.ownerApprovedYesMin || 0) || "&mdash;") + '</strong></div>'
-            + '<div class="preloop-stage-metric"><span>Reviewed no</span><strong>' + Number(lockCounts.ownerRejectedNo || 0) + ' / ' + (Number(threshold.representativeNoMin || 0) || "&mdash;") + '</strong></div>'
-            + '<div class="preloop-stage-metric"><span>Reviewed clarify</span><strong>' + Number(lockCounts.reviewedClarify || 0) + ' / ' + (Number(threshold.reviewedClarifyMin || 0) || "&mdash;") + '</strong></div>'
-            + '<div class="preloop-stage-metric"><span>Pending owner</span><strong>' + pendingOwnerValue + ' / ' + (Number(threshold.pendingOwnerMax || 0) || "&mdash;") + '</strong></div>'
-            + '<div class="preloop-stage-metric"><span>Pending calibration</span><strong>' + pendingCalibrationValue + ' / ' + (Number(threshold.pendingCalibrationMax || 0) || "&mdash;") + '</strong></div>'
-            + '</div></div>'
-            + '<div class="preloop-stage-group">'
-            + '<div class="preloop-stage-group-title">Coverage</div>'
-            + '<div class="preloop-stage-metric-list">'
-            + '<div class="preloop-stage-metric"><span>Domains</span><strong>' + Number(lockCounts.approvedDomainCoverage || 0) + ' / ' + (Number(threshold.approvedDomainCoverageMin || 0) || "&mdash;") + '</strong></div>'
-            + '<div class="preloop-stage-metric"><span>Lenses</span><strong>' + Number(lockCounts.approvedLensCoverage || 0) + ' / ' + (Number(threshold.approvedLensCoverageMin || 0) || "&mdash;") + '</strong></div>'
-            + '<div class="preloop-stage-metric"><span>Actors</span><strong>' + Number(lockCounts.approvedActorCoverage || 0) + ' / ' + (Number(threshold.actorCoverageMin || 0) || "&mdash;") + '</strong></div>'
-            + '<div class="preloop-stage-metric"><span>Groups</span><strong>' + Number(lockCounts.approvedGroupCoverage || 0) + ' / ' + (Number(threshold.groupCoverageMin || 0) || "&mdash;") + '</strong></div>'
-            + '<div class="preloop-stage-metric"><span>Families</span><strong>' + Number(lockCounts.approvedDistinctConversationFamilies || 0) + ' / ' + (Number(threshold.distinctConversationFamiliesMin || 0) || "&mdash;") + '</strong></div>'
-            + '<div class="preloop-stage-metric"><span>Critical reviewed</span><strong>' + Number(lockCounts.criticalReviewedSlice || 0) + ' / ' + (Number(threshold.criticalReviewedSliceMin || 0) || "&mdash;") + '</strong></div>'
-            + '</div></div>'
-            + blockerRowsHtml
-            + '</article>';
-        }).join("");
-        byId("preloopStageReadiness").className = "preloop-stage-grid";
-        byId("preloopStageReadiness").innerHTML = stageReadinessCards;
-
-        const reviewedSummary = [
-          "<b>Reviewed:</b>",
-          "owner " + Number(lockCounts.ownerReviewedTotal || 0),
-          "yes " + Number(lockCounts.ownerApprovedYes || 0),
-          "no " + Number(lockCounts.ownerRejectedNo || 0),
-          "clarify " + Number(lockCounts.reviewedClarify || 0),
-          "critical " + Number(lockCounts.criticalReviewedSlice || 0)
-        ].join(" | ");
+          return "<div><b>" + label + ":</b> " + (item.pass ? "ready" : "blocked") + blockers + "</div>";
+        }).join("")
+          + '<div style="margin-top:6px;"><b>Reviewed:</b> '
+          + Number(lockCounts.ownerReviewedTotal || 0)
+          + " | <b>Yes:</b> " + Number(lockCounts.ownerApprovedYes || 0)
+          + " | <b>No:</b> " + Number(lockCounts.ownerRejectedNo || 0)
+          + " | <b>Clarify:</b> " + Number(lockCounts.reviewedClarify || 0)
+          + " | <b>Domains:</b> " + Number(lockCounts.approvedDomainCoverage || 0)
+          + " | <b>Lenses:</b> " + Number(lockCounts.approvedLensCoverage || 0)
+          + " | <b>Critical:</b> " + Number(lockCounts.criticalReviewedSlice || 0)
+          + "</div>";
         byId("preloopReadinessBar").innerHTML =
-          reviewedSummary
-          + " | Stage " + escapeHtml(benchmarkStage)
+          "Stage " + escapeHtml(benchmarkStage)
           + " | Clear " + (Number(metrics.clearPassRate || 0) * 100).toFixed(2) + "%"
           + " | Clarify " + (Number(metrics.clarifyPassRate || 0) * 100).toFixed(2) + "%"
           + " | Debt " + (Number(metrics.unresolvedAmbiguousRatio || 0) * 100).toFixed(2) + "%"
           + " | Verifier " + (Number(metrics.verifierPassRate || 0) * 100).toFixed(2) + "%"
-          + " | Human " + (Number(metrics.humanCaseShare || 0) * 100).toFixed(1) + "%"
-          + " | Assistant " + (Number(metrics.assistantCaseShare || 0) * 100).toFixed(1) + "%"
-          + " | 1:1 " + Number(metrics.direct1to1Coverage || 0)
-          + " | Groups " + Number(metrics.groupChatCoverage || 0)
-          + " | 3rd-party " + Number(metrics.thirdPartyCoverage || 0)
           + " | calibration eligible " + Number(lockCounts.calibrationEligible || 0)
           + " | pending owner " + Number(lockCounts.pendingOwner || 0)
-          + " | pending queue " + Number(queueCounts.pending || 0)
+          + " | pending queue " + Number(statusCounts.pending || 0)
           + " | labels yes/no " + Number(verdictCounts.yes || 0) + "/" + Number(verdictCounts.no || 0)
           + " | lock target " + escapeHtml(selectedStage);
         byId("runControlLockBenchmark").disabled = !lockReady;
@@ -3370,7 +1830,7 @@ export function renderAppHtml(): string {
         const now = new Date().toLocaleTimeString();
         const next = "[" + now + "] " + line;
         const existing = String(el.textContent || "");
-        el.textContent = existing ? (existing + "\\n" + next) : next;
+        el.textContent = existing ? (existing + "\n" + next) : next;
         el.scrollTop = el.scrollHeight;
       }
 
@@ -3431,20 +1891,10 @@ export function renderAppHtml(): string {
 
       async function refreshEvolutionModule(full = true) {
         await loadEvolutionExperimentList(false);
-        if (state.evolutionTab === "overview") {
-          await loadEvolutionLight();
-          await loadEvolutionHeavy();
-          return;
-        }
-        if (state.evolutionTab === "preloop") {
-          await loadPreloopQueueAndReadiness();
-          return;
-        }
-        if (state.evolutionTab === "ontology") {
-          await loadOntologyReview(false);
-          return;
-        }
         await loadEvolutionLight();
+        if (full || state.evolutionTab === "overview") await loadEvolutionHeavy();
+        await loadPreloopQueueAndReadiness();
+        if (full || state.evolutionTab === "ontology") await loadOntologyReview(false);
       }
 
       async function refreshModuleData(moduleName) {
@@ -3743,56 +2193,22 @@ export function renderAppHtml(): string {
         runControlLoopStop();
       });
 
-      async function doLogin(event) {
-        if (event) {
-          event.preventDefault();
-        }
-        if (state.loginInProgress) return;
+      byId("loginForm").addEventListener("submit", async (event) => {
+        event.preventDefault();
         loginError.textContent = "";
-        const password = String(byId("passwordInput").value || "").trim();
-        if (!password) {
-          loginError.textContent = "Password is required.";
-          return;
-        }
-        state.loginInProgress = true;
         try {
           const payload = await api("/v1/auth/login", {
             method: "POST",
-            body: JSON.stringify({ password })
+            body: JSON.stringify({ password: byId("passwordInput").value })
           }, false);
-          const token = String(payload?.token || "").trim();
-          if (!token) {
-            throw new Error("Login returned no token.");
-          }
-          setSessionToken(token);
+          state.token = payload.token;
           showApp();
-          const bootstrapErrorHint = "Your session was created, but some dashboard data did not load. You can continue after retrying sections.";
-          const bootstrapTasks = [
-            loadPrivacyMode(),
-            refreshModuleData("brief"),
-            ensureEvolutionExperimentId(true)
-          ].map((task) =>
-            task.catch((error) => {
-              console.error("Login bootstrap step failed:", error);
-              loginError.textContent = bootstrapErrorHint;
-              return null;
-            })
-          );
-          await Promise.allSettled(bootstrapTasks);
-          byId("passwordInput").value = "";
+          await loadPrivacyMode();
+          await refreshModuleData("brief");
+          await ensureEvolutionExperimentId(true).catch(() => "");
         } catch (error) {
-          showLogin();
           loginError.textContent = error.message || "Login failed";
-        } finally {
-          state.loginInProgress = false;
         }
-      }
-
-      byId("loginForm").addEventListener("submit", doLogin);
-      byId("passwordInput").addEventListener("keydown", (event) => {
-        if (event.key !== "Enter") return;
-        event.preventDefault();
-        void doLogin(event);
       });
 
       byId("askButton").addEventListener("click", async () => {
@@ -3911,25 +2327,4 @@ export function renderAppHtml(): string {
 
       window.addEventListener("resize", () => resizeVisuals());
       syncAskInputMode();
-
-      const restoredToken = restoreStoredSessionToken();
-      if (restoredToken) {
-        setSessionToken(restoredToken);
-        const restoredAuth = getAuthSnapshot();
-        showApp();
-        api("/v1/auth/session", { method: "GET" })
-          .then(() => (isAuthSnapshotCurrent(restoredAuth) ? loadPrivacyMode() : null))
-          .then(() => (isAuthSnapshotCurrent(restoredAuth) ? refreshModuleData("brief") : null))
-          .then(() => (isAuthSnapshotCurrent(restoredAuth) ? ensureEvolutionExperimentId(true).catch(() => "") : null))
-          .catch((error) => {
-            if (!isAuthSnapshotCurrent(restoredAuth)) return;
-            loginError.textContent = error?.message || "Session expired. Please log in again.";
-            showLogin();
-          });
-      }
     })();
-  </script>
-</body>
-</html>`;
-}
-

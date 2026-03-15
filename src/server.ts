@@ -405,6 +405,13 @@ async function main(): Promise<void> {
   app.disable("x-powered-by");
 
   app.use(express.json({ limit: "2mb" }));
+  app.use((error: unknown, _req: Request, res: Response, next: (error?: unknown) => void): void => {
+    if (error && typeof error === "object" && (error as { type?: string }).type === "entity.parse.failed") {
+      res.status(400).json({ ok: false, error: "Invalid JSON body" });
+      return;
+    }
+    next(error as unknown);
+  });
   app.use(applyCors);
   app.use(applyRateLimit);
 

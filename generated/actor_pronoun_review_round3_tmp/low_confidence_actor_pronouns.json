@@ -1,0 +1,169 @@
+[
+  {
+    "actorId": "7cc122ff-96a1-4c54-8992-85ceca987ca6",
+    "chatNamespace": "personal.main",
+    "canonicalName": "3 Ladies w/ 3 Dudes",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [],
+    "messageCount": 0,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.2,
+    "source": "messageCount",
+    "rationale": "No messages or further context leads to the use of they/them.",
+    "sampleMessages": [],
+    "flags": []
+  },
+  {
+    "actorId": "b721d842-0996-4225-bedc-690945073589",
+    "chatNamespace": "personal.main",
+    "canonicalName": "ALPHA TOURS 24/7",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 1,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.2,
+    "source": "sampleMessages",
+    "rationale": "Only one message present, insufficient for any clear pronoun attribution.",
+    "sampleMessages": [],
+    "flags": [
+      "single_message_contact"
+    ]
+  },
+  {
+    "actorId": "17983164-d9f6-4658-9d85-3f7cc5e7e7ea",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Parabens",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [],
+    "messageCount": 0,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.2,
+    "source": "no messages available",
+    "rationale": "No evidence to support a specific gender; ambiguous name.",
+    "sampleMessages": [],
+    "flags": []
+  },
+  {
+    "actorId": "170a7bc1-9be5-4d06-89e8-588dc82459e2",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Sendoff party",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [],
+    "messageCount": 0,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.25,
+    "source": "ambiguous_default",
+    "rationale": "Model did not return a pronoun set for this actor; using neutral fallback.",
+    "sampleMessages": [],
+    "flags": []
+  },
+  {
+    "actorId": "beb9c225-1c54-4201-9f69-2b931329dc1e",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Neighbors 4eva!",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 3,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.3,
+    "source": "actorTypes",
+    "rationale": "Group name; unclear individual attribution.",
+    "sampleMessages": [
+      "you changed this group's icon",
+      "you changed this group's icon"
+    ],
+    "flags": []
+  },
+  {
+    "actorId": "2f14a287-5566-4481-9f1c-c876c23face9",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Gville ?",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 1,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.4,
+    "source": "sampleMessages",
+    "rationale": "The ambiguity of 'Gville ?' makes it unclear regarding gender, necessitating a neutral pronoun.",
+    "sampleMessages": [],
+    "flags": [
+      "single_message_contact"
+    ]
+  },
+  {
+    "actorId": "6b929ca7-0b8a-41ca-a0db-d725ae6c2d46",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Marinete Gomes",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 99,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.4,
+    "source": "canonicalName",
+    "rationale": "Ambiguous name (~ Marinete Gomes) may indicate non-binary preferences.",
+    "sampleMessages": [
+      "monique maninha removed ~ marinete gomes",
+      "que linda! já pode fazer parte do grupo de louvor.😍",
+      "eu já tive um tempo atrás e vc não consegue nem virar na cama.",
+      "é dor pra todos os lados."
+    ],
+    "flags": []
+  }
+]

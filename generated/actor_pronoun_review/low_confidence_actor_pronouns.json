@@ -1,0 +1,590 @@
+[
+  {
+    "actorId": "7cc122ff-96a1-4c54-8992-85ceca987ca6",
+    "chatNamespace": "personal.main",
+    "canonicalName": "3 Ladies w/ 3 Dudes",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [],
+    "messageCount": 0,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.2,
+    "source": "messageCount",
+    "rationale": "No messages or further context leads to the use of they/them.",
+    "sampleMessages": [],
+    "flags": []
+  },
+  {
+    "actorId": "a623e798-8c11-4ba4-bf8d-4f7fd79cc345",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Ale",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [],
+    "messageCount": 0,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.2,
+    "source": "sampleMessages",
+    "rationale": "No messages available for attribution, weak evidence for any specific pronoun.",
+    "sampleMessages": [],
+    "flags": [
+      "short_low_signal"
+    ]
+  },
+  {
+    "actorId": "b721d842-0996-4225-bedc-690945073589",
+    "chatNamespace": "personal.main",
+    "canonicalName": "ALPHA TOURS 24/7",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 1,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.2,
+    "source": "sampleMessages",
+    "rationale": "Only one message present, insufficient for any clear pronoun attribution.",
+    "sampleMessages": [],
+    "flags": [
+      "single_message_contact"
+    ]
+  },
+  {
+    "actorId": "6af94af5-768a-4d91-94aa-2799511fbe7f",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Horacio",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 1,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.2,
+    "source": "no messages",
+    "rationale": "Insufficient evidence to determine gender; actor relies on an ambiguous name.",
+    "sampleMessages": [],
+    "flags": [
+      "single_message_contact"
+    ]
+  },
+  {
+    "actorId": "79eac68a-7bdd-40a7-8333-8d22a41d8115",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Karina",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 1,
+    "pronouns": {
+      "subject": "she",
+      "object": "her",
+      "possessive": "her"
+    },
+    "confidence": 0.2,
+    "source": "actor's name",
+    "rationale": "The name Karina may imply a feminine identity, but without further evidence, the confidence remains low.",
+    "sampleMessages": [],
+    "flags": [
+      "single_message_contact"
+    ]
+  },
+  {
+    "actorId": "f9e20804-f869-4190-a551-0f7ef7c23b75",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Kelly Busin",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 1,
+    "pronouns": {
+      "subject": "she",
+      "object": "her",
+      "possessive": "her"
+    },
+    "confidence": 0.2,
+    "source": "actor's name",
+    "rationale": "The name Kelly is commonly feminine, but with only one sample message, the evidence remains weak.",
+    "sampleMessages": [
+      "kelly - caramelized goat cheese salad julia - caramelized goat cheese salad"
+    ],
+    "flags": [
+      "single_message_contact"
+    ]
+  },
+  {
+    "actorId": "17983164-d9f6-4658-9d85-3f7cc5e7e7ea",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Parabens",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [],
+    "messageCount": 0,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.2,
+    "source": "no messages available",
+    "rationale": "No evidence to support a specific gender; ambiguous name.",
+    "sampleMessages": [],
+    "flags": []
+  },
+  {
+    "actorId": "6f5f28a7-0495-455f-b3f5-aae77720d893",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Christian Carlos",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 2392,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.25,
+    "source": "ambiguous_default",
+    "rationale": "Model did not return a pronoun set for this actor; using neutral fallback.",
+    "sampleMessages": [
+      "ahora necesito el tesla que guíe solo.",
+      "me inspiré en tu road trip y planifiqué uno de dallas ga (dónde vivo) a greenville sc, asheville nc, charlotte nc, columbia sc, charleston sc, athens ga, dallas ga.",
+      "desde que cambié el portfolio ya subió como 3k. tengo miedo. 🤣",
+      "https://youtube.com/shorts/zaux3hjrexm?si=udjuzwre4x0evx-q nvidia autonomous vehicle chip with mercedes benz"
+    ],
+    "flags": []
+  },
+  {
+    "actorId": "eee03b80-2df4-499e-8fc4-38b4daf55a3e",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Francheska",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 610,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.25,
+    "source": "ambiguous_default",
+    "rationale": "Model did not return a pronoun set for this actor; using neutral fallback.",
+    "sampleMessages": [
+      "trate de converserla a que regrese🫣",
+      "ivette, cristina y yo aparecemos como 1er dan",
+      "le pregunte al sr. irizarry y me informa que la nuestra esta dañada. sorry",
+      "gracias a todos por sus felicitaciones!"
+    ],
+    "flags": []
+  },
+  {
+    "actorId": "a4d7cba8-f8eb-4941-972c-483aadf4dab4",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Jacob Wright",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [],
+    "messageCount": 0,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.25,
+    "source": "ambiguous_default",
+    "rationale": "Model did not return a pronoun set for this actor; using neutral fallback.",
+    "sampleMessages": [],
+    "flags": []
+  },
+  {
+    "actorId": "170a7bc1-9be5-4d06-89e8-588dc82459e2",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Sendoff party",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [],
+    "messageCount": 0,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.25,
+    "source": "ambiguous_default",
+    "rationale": "Model did not return a pronoun set for this actor; using neutral fallback.",
+    "sampleMessages": [],
+    "flags": []
+  },
+  {
+    "actorId": "30aa88c5-70d2-4fc0-bc24-c4df582225cd",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Allen",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 5,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.3,
+    "source": "sampleMessages",
+    "rationale": "The messages are ambiguous and do not indicate a clear gender.",
+    "sampleMessages": [
+      "igual a ti como has estado",
+      "sammy sensei added ~ allen"
+    ],
+    "flags": []
+  },
+  {
+    "actorId": "917ce06e-3025-4bd5-b6ce-9c663094e018",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Jan",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [],
+    "messageCount": 0,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.3,
+    "source": "name context",
+    "rationale": "Jan does not clearly indicate gender.",
+    "sampleMessages": [],
+    "flags": [
+      "short_low_signal"
+    ]
+  },
+  {
+    "actorId": "a903b522-03a7-4f6d-b186-7024302810aa",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Kraken",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 71,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.3,
+    "source": "actor's name",
+    "rationale": "The name Kraken is ambiguous and does not provide any clear indicators of gender.",
+    "sampleMessages": [
+      "https://www.facebook.com/share/r/1bl4kpnxgv/",
+      "https://www.facebook.com/share/v/1kkgdrkwwz/",
+      "https://www.instagram.com/reel/dt2ygzokkg5/?igsh=mtbybzrvztdpcgn1yg==",
+      "feliz año nuevo para todos"
+    ],
+    "flags": []
+  },
+  {
+    "actorId": "beb9c225-1c54-4201-9f69-2b931329dc1e",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Neighbors 4eva!",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 3,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.3,
+    "source": "actorTypes",
+    "rationale": "Group name; unclear individual attribution.",
+    "sampleMessages": [
+      "you changed this group's icon",
+      "you changed this group's icon"
+    ],
+    "flags": []
+  },
+  {
+    "actorId": "2f14a287-5566-4481-9f1c-c876c23face9",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Gville ?",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 1,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.4,
+    "source": "sampleMessages",
+    "rationale": "The ambiguity of 'Gville ?' makes it unclear regarding gender, necessitating a neutral pronoun.",
+    "sampleMessages": [],
+    "flags": [
+      "single_message_contact"
+    ]
+  },
+  {
+    "actorId": "e289c792-62a5-4755-8c97-7142536a1f39",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Isidro Castiñeyra",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 7,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.4,
+    "source": "multiple messages imply an informal conversat...",
+    "rationale": "Messages indicate familiarity, but no clear gender indication.",
+    "sampleMessages": [
+      "i got cash out of am atm at the airport. usually your bank gives a better rate than the cash exchange. do remember to use only the first four digits of your pin.",
+      "cabeza dura. [7/9/23, 11:31:25] anibal: gif omitted",
+      "the same form that afifa sent in english: https://apps.migracioncolombia.gov.co/pre-registro/en/datosviaje",
+      "se detecta cierta tensión en el aire."
+    ],
+    "flags": []
+  },
+  {
+    "actorId": "b51a1142-0579-4bcb-8f24-ccbff3f00bc6",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Kris🧚‍♂️✨️",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 8,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.4,
+    "source": "sample messages",
+    "rationale": "The name Kris, while often male, can also be gender-neutral. The messages reflect a casual tone, lacking definitive gender indicators.",
+    "sampleMessages": [
+      "para saber qué pagar y esoo",
+      "hola, pregunta: quién va a trabajar lo de las camisas para el ninja camp?",
+      "felicidades!! que sean muchos más!!🎂🥳 @~ivette",
+      "https://www.instagram.com/reel/c61a5tdij80/?igsh=cwpwm2hlc2z4ohex"
+    ],
+    "flags": []
+  },
+  {
+    "actorId": "3828ab3c-0779-46e9-81f2-cab0ad6dee88",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Marcela",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 1,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.4,
+    "source": "actorTypes",
+    "rationale": "Marcela provides ambiguous context and clear evidence of gender is lacking.",
+    "sampleMessages": [
+      "yupiiiiiii que ótima noticaaaaaaa, então fica rico logo,abre sua empresa e leva todos nós, pra acabar com essa sofrencia kkkkkkkk, felicidades amigo hay mucho que celebrar!!!!! 😘"
+    ],
+    "flags": [
+      "single_message_contact"
+    ]
+  },
+  {
+    "actorId": "273b942d-5b63-4e98-961d-ce63f77b8b68",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Marinete",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 1148,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.4,
+    "source": "canonicalName",
+    "rationale": "Ambiguous name (~ Marinete) may indicate non-binary preferences.",
+    "sampleMessages": [
+      "https://www.facebook.com/share/1fsjxvkusy/",
+      "https://www.instagram.com/reel/dunvfjpdqqr/?igsh=mtnzazzmyne4ogltdg==",
+      "mais não é do rio, choveu muito ,acho que foi tromba dágua",
+      "parabéns juliana ,que deus te abençoe sempre! 🎈🎉"
+    ],
+    "flags": []
+  },
+  {
+    "actorId": "6b929ca7-0b8a-41ca-a0db-d725ae6c2d46",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Marinete Gomes",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 99,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.4,
+    "source": "canonicalName",
+    "rationale": "Ambiguous name (~ Marinete Gomes) may indicate non-binary preferences.",
+    "sampleMessages": [
+      "monique maninha removed ~ marinete gomes",
+      "que linda! já pode fazer parte do grupo de louvor.😍",
+      "eu já tive um tempo atrás e vc não consegue nem virar na cama.",
+      "é dor pra todos os lados."
+    ],
+    "flags": []
+  },
+  {
+    "actorId": "8355694e-a15d-4e81-b21f-29ffdda30022",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Marko",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 60,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.4,
+    "source": "canonicalName",
+    "rationale": "Ambiguous name (Marko) may indicate non-binary preferences.",
+    "sampleMessages": [
+      "https://www.theguardian.com/us-news/2021/feb/09/texas-lawyer-zoom-cat-filter-kitten",
+      "thats a big book for learning in a nutshell",
+      "happy new year! 🎉 🥳 [1/1/21, 10:11:46] ~ anand: gif omitted",
+      "very sad, will be missed"
+    ],
+    "flags": []
+  },
+  {
+    "actorId": "8a19fd41-59d3-4beb-a8fc-015fd734dada",
+    "chatNamespace": "personal.main",
+    "canonicalName": "Soma",
+    "actorType": "contact",
+    "actorTypes": [
+      "contact"
+    ],
+    "sourceSystems": [
+      "whatsapp"
+    ],
+    "messageCount": 22,
+    "pronouns": {
+      "subject": "they",
+      "object": "them",
+      "possessive": "their"
+    },
+    "confidence": 0.4,
+    "source": "sampleMessages",
+    "rationale": "No messages available to ascertain gender, thus defaulting to they/them.",
+    "sampleMessages": [
+      "which team are you going to?",
+      "i heard situation is getting worst in brazil",
+      "this bloody corona has spoiled many things",
+      "got to know you moved out to other team"
+    ],
+    "flags": []
+  }
+]

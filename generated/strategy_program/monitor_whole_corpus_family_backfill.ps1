@@ -18,7 +18,7 @@ $runtimeBeforeFlushMs = 30000
 $flushTarget = 1
 $maxFamilyRuntimeMs = 45000
 $cursorPath = Join-Path $root "generated\strategy_program\whole_corpus_family_backfill_cursor.json"
-$stopOnWrap = $true
+$stopOnWrap = ($env:OB_MONITOR_STOP_ON_WRAP -eq "" -or $env:OB_MONITOR_STOP_ON_WRAP -ne "false")
 
 function Write-MonitorLog {
   param([string]$Message)
@@ -84,6 +84,7 @@ function Start-Runner {
     OB_BACKFILL_RUNTIME_BEFORE_FLUSH_MS = $env:OB_BACKFILL_RUNTIME_BEFORE_FLUSH_MS
     OB_BACKFILL_FLUSH_TARGET = $env:OB_BACKFILL_FLUSH_TARGET
     OB_BACKFILL_MAX_FAMILY_RUNTIME_MS = $env:OB_BACKFILL_MAX_FAMILY_RUNTIME_MS
+    OB_BACKFILL_ALLOW_FULL_WRAP = $env:OB_BACKFILL_ALLOW_FULL_WRAP
   }
   $env:OB_BACKFILL_TARGET_COUNT = "$batchTarget"
   $env:OB_BACKFILL_MAX_FAMILIES_WITHOUT_ACCEPTANCE = "$maxFamiliesWithoutAcceptance"
@@ -91,6 +92,9 @@ function Start-Runner {
   $env:OB_BACKFILL_RUNTIME_BEFORE_FLUSH_MS = "$runtimeBeforeFlushMs"
   $env:OB_BACKFILL_FLUSH_TARGET = "$flushTarget"
   $env:OB_BACKFILL_MAX_FAMILY_RUNTIME_MS = "$maxFamilyRuntimeMs"
+  if ($env:OB_BACKFILL_ALLOW_FULL_WRAP) {
+    $env:OB_BACKFILL_ALLOW_FULL_WRAP = $env:OB_BACKFILL_ALLOW_FULL_WRAP
+  }
   try {
     Remove-Item $runnerStdout, $runnerStderr -ErrorAction SilentlyContinue
     $argumentLine = ('"{0}" "{1}"' -f $tsxCli, $runnerPath)

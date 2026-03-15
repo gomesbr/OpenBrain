@@ -15065,7 +15065,9 @@ export async function experimentList(params?: {
        (
          SELECT COUNT(*)::text
          FROM experiment_judge_calibration_items i
+         JOIN experiment_cases c ON c.id = i.case_id
          WHERE i.experiment_id = e.id
+           AND c.is_stale = false
            AND i.status = 'pending'
        ) AS pending_calibration
      FROM experiment_runs e
@@ -15690,10 +15692,12 @@ export async function experimentPreloopReadiness(params: {
     [params.experimentId]
   );
   const queueRows = await pool.query<{ status: string; c: string }>(
-    `SELECT status, COUNT(*)::text AS c
-     FROM experiment_judge_calibration_items
-     WHERE experiment_id = $1::uuid
-     GROUP BY status`,
+    `SELECT i.status, COUNT(*)::text AS c
+     FROM experiment_judge_calibration_items i
+     JOIN experiment_cases c ON c.id = i.case_id
+     WHERE i.experiment_id = $1::uuid
+       AND c.is_stale = false
+     GROUP BY i.status`,
     [params.experimentId]
   );
   const total = Number(counts.rows[0]?.total ?? 0);
@@ -15867,6 +15871,8 @@ export async function experimentPreloopReadiness(params: {
       approvedDistinctHumanActors: ownerCoverage.approvedDistinctHumanActors,
       approvedDistinctHumanGroups: ownerCoverage.approvedDistinctHumanGroups,
       approvedDistinctConversationFamilies: ownerCoverage.approvedDistinctConversationFamilies,
+      reviewableDomainCoverage: ownerCoverage.reviewableDomainCoverage,
+      reviewableLensCoverage: ownerCoverage.reviewableLensCoverage,
       reviewableActorCoverage: ownerCoverage.reviewableActorCoverage,
       reviewableGroupCoverage: ownerCoverage.reviewableGroupCoverage,
       reviewableThreadCoverage: ownerCoverage.reviewableThreadCoverage,
@@ -17704,21 +17710,597 @@ export async function refreshExperimentExpectedAnswerSummaries(params: {
   };
 }
 
+async function retagActiveBenchmarkCasesSecondPass(params: {
+  experimentId: string;
+}): Promise<Record<string, unknown>> {
+  const experiment = await readExperiment(params.experimentId);
+  const taxonomyVersion = experiment.taxonomy_version_id
+    ? await loadTaxonomyVersionRowById(experiment.taxonomy_version_id)
+    : await getPublishedTaxonomyVersion(null);
+  const supportRows = await loadTaxonomySupportRows(taxonomyVersion.id, experiment.chat_namespace);
+  const supported = buildSupportedPairDescriptors({
+    supportRows,
+    preferredDomains: new Set<string>(),
+    preferredLenses: new Set<string>()
+  });
+  const rows = await pool.query<{
+    case_id: string;
+    domain: string;
+    lens: string;
+    case_type: string;
+    question: string;
+    source_evidence_id: string | null;
+    evidence_ids: string[] | string;
+    conversation_ids: string[] | string;
+    metadata: Record<string, unknown>;
+  }>(
+    `SELECT
+       c.id::text AS case_id,
+       c.domain,
+       c.lens,
+       c.case_type,
+       c.question,
+       c.source_evidence_id::text,
+       COALESCE(c.evidence_ids::text, '{}') AS evidence_ids,
+       COALESCE(c.conversation_ids::text, '{}') AS conversation_ids,
+       c.metadata
+     FROM experiment_cases c
+     WHERE c.experiment_id = $1::uuid
+       AND c.is_stale = false`,
+    [params.experimentId]
+  );
+
+  const allEvidenceIds = uniqueStrings(
+    rows.rows.flatMap((row) => (
+      Array.isArray(row.evidence_ids)
+        ? row.evidence_ids.map(String)
+        : parsePgTextArray(String(row.evidence_ids ?? "{}"))
+    ))
+  );
+  const evidenceRowMap = new Map<string, SeedEvidenceCandidate>(
+    (await loadSeedEvidenceRowsByIds({
+      chatNamespace: experiment.chat_namespace,
+      canonicalIds: allEvidenceIds
+    })).map((row) => [row.canonical_id, row])
+  );
+  const conversationCache = new Map<string, SeedEvidenceCandidate[]>();
+  const updated: Array<{
+    caseId: string;
+    previousDomain: string;
+    previousLens: string;
+    nextDomain: string;
+    nextLens: string;
+    questionChanged: boolean;
+  }> = [];
+  const skipped: Array<{
+    caseId: string;
+    reason: string;
+  }> = [];
+
+  for (const row of rows.rows) {
+    const metadata = row.metadata ?? {};
+    const evidenceIds = Array.isArray(row.evidence_ids)
+      ? row.evidence_ids.map(String)
+      : parsePgTextArray(String(row.evidence_ids ?? "{}"));
+    const evidenceRows = evidenceIds
+      .map((id) => evidenceRowMap.get(id))
+      .filter((item): item is SeedEvidenceCandidate => Boolean(item));
+    let anchor = evidenceRows.find((item) => item.canonical_id === String(row.source_evidence_id ?? "").trim()) ?? evidenceRows[0] ?? null;
+    if (!anchor) {
+      const conversationIds = Array.isArray(row.conversation_ids)
+        ? row.conversation_ids.map(String)
+        : parsePgTextArray(String(row.conversation_ids ?? "{}"));
+      const fallbackConversationId = String(conversationIds[0] ?? "").trim();
+      if (fallbackConversationId) {
+        let fallbackRows = conversationCache.get(fallbackConversationId);
+        if (!fallbackRows) {
+          fallbackRows = await loadConversationContextRows({
+            chatNamespace: experiment.chat_namespace,
+            conversationId: fallbackConversationId
+          });
+          conversationCache.set(fallbackConversationId, fallbackRows);
+        }
+        anchor = fallbackRows[0] ?? null;
+      }
+    }
+    if (!anchor) {
+      skipped.push({ caseId: row.case_id, reason: "missing_anchor" });
+      continue;
+    }
+
+    let conversationRows = conversationCache.get(anchor.conversation_id);
+    if (!conversationRows) {
+      conversationRows = await loadConversationContextRows({
+        chatNamespace: experiment.chat_namespace,
+        conversationId: anchor.conversation_id
+      });
+      conversationCache.set(anchor.conversation_id, conversationRows);
+    }
+    const contextRows = buildCaseContextRows(anchor, conversationRows);
+    if (contextRows.length <= 0) {
+      skipped.push({ caseId: row.case_id, reason: "empty_context" });
+      continue;
+    }
+
+    const actorName = resolveQuestionActorName(anchor, contextRows);
+    const statementOwner = inferStatementOwner(anchor, contextRows);
+    const familyReasoningModes = rankReasoningModesForWholeCorpusAuthoring({
+      contextRows,
+      statementOwnerRole: statementOwner.statementOwnerRole
+    });
+    const provisionalDomainSelection = selectWholeCorpusProvisionalDomain({
+      anchor,
+      contextRows,
+      supported
+    });
+    const currentSemanticFrame = readSemanticFrame(metadata);
+    const questionVoiceRaw = String(metadata.questionVoice ?? "unknown").trim();
+    const normalizedQuestionVoice = normalizeQuestionVoiceForFrame(
+      questionVoiceRaw === "user_first_person" || questionVoiceRaw === "user_about_other" || questionVoiceRaw === "assistant_proxy"
+        ? questionVoiceRaw
+        : "unknown",
+      currentSemanticFrame
+    );
+    const expectedBehavior = String(metadata.expectedBehavior ?? "").trim() === "clarify_first"
+      ? "clarify_first"
+      : "answer_now";
+    const expectedCoreClaims = buildExpectedCoreClaims(contextRows);
+    const evidencePreviewRows = contextRows.map((item) => ({
+      evidenceId: item.canonical_id,
+      actorName: item.actor_name,
+      observedAt: item.source_timestamp,
+      sourceSystem: item.source_system,
+      snippet: item.content
+    }));
+    const storedSummary = String(metadata.expectedAnswerSummaryHuman ?? "").trim();
+    const currentSummary = (!storedSummary || looksGenericExpectedAnswerSummary(storedSummary))
+      ? (buildEvidenceGroundedAnswerSummary({
+        question: row.question,
+        domain: row.domain,
+        lens: row.lens,
+        expectedBehavior,
+        expectedCoreClaims,
+        actorName: currentSemanticFrame?.statementOwnerName ?? currentSemanticFrame?.actorScope ?? actorName,
+        semanticFrame: currentSemanticFrame,
+        evidenceTexts: evidencePreviewRows.map((item) => item.snippet),
+        evidenceRows: evidencePreviewRows
+      }) || storedSummary)
+      : storedSummary;
+
+    const semanticFrameForDraft = currentSemanticFrame ?? buildWholeCorpusAuthoringSemanticFrame({
+      lens: row.lens,
+      window: relativeWindowPhrase(anchor.source_timestamp),
+      contextRows,
+      anchor,
+      actorName,
+      familyReasoningModes
+    });
+    const existingCritique = readAuthoringCritique(metadata) ?? scoreAuthoringCritique({
+      question: row.question,
+      questionVoice: normalizedQuestionVoice,
+      expectedBehavior,
+      clarificationQuestion: readClarificationQuestion(metadata),
+      resolvedQuestionAfterClarification: readResolvedQuestionAfterClarification(metadata),
+      actorName,
+      domain: row.domain,
+      lens: row.lens,
+      semanticFrame: semanticFrameForDraft,
+      contextRows,
+      domainScore: Math.max(Number(anchor.domain_score ?? 0.5), 0.35),
+      hardGuardReasons: []
+    });
+    const draft: BenchmarkAuthoringDraft = {
+      authoringVersion: BENCHMARK_AUTHORING_VERSION,
+      semanticFrame: semanticFrameForDraft,
+      questionVoice: normalizedQuestionVoice,
+      candidateQuestions: [{
+        kind: "stored",
+        question: row.question,
+        rationale: "Stored accepted question",
+        expectedBehavior,
+        clarificationQuestion: readClarificationQuestion(metadata),
+        resolvedQuestionAfterClarification: readResolvedQuestionAfterClarification(metadata)
+      }],
+      chosenQuestion: row.question,
+      chosenQuestionRationale: "Stored accepted question",
+      expectedBehavior,
+      clarificationQuestion: readClarificationQuestion(metadata),
+      resolvedQuestionAfterClarification: readResolvedQuestionAfterClarification(metadata),
+      expectedAnswerSummaryHuman: currentSummary,
+      authoringDecision: existingCritique.pass ? "accept" : "reject",
+      rejectionReasons: existingCritique.pass ? [] : existingCritique.reasons,
+      authoringCritique: existingCritique
+    };
+
+    const assigned = assignDomainLensForWholeCorpusDraft({
+      supported,
+      anchor,
+      contextRows,
+      actorName,
+      window: relativeWindowPhrase(anchor.source_timestamp),
+      draft,
+      provisionalDomain: provisionalDomainSelection.domain || row.domain,
+      provisionalLens: row.lens,
+      provisionalDomainScore: Math.max(
+        Number(provisionalDomainSelection.score ?? 0),
+        Number(anchor.domain_score ?? 0.35),
+        0.35
+      ),
+      familyReasoningModes
+    });
+
+    const refreshedQuestionVoice = normalizeQuestionVoiceForFrame(normalizedQuestionVoice, assigned.semanticFrame);
+    const refreshedQuestion = normalizeAssistantHistoricalQuestion(row.question, assigned.semanticFrame, refreshedQuestionVoice);
+    const refreshedSummary = buildEvidenceGroundedAnswerSummary({
+      question: refreshedQuestion,
+      domain: assigned.domain,
+      lens: assigned.lens,
+      expectedBehavior,
+      expectedCoreClaims,
+      actorName: assigned.semanticFrame.statementOwnerName ?? assigned.semanticFrame.actorScope ?? actorName,
+      semanticFrame: assigned.semanticFrame,
+      evidenceTexts: evidencePreviewRows.map((item) => item.snippet),
+      evidenceRows: evidencePreviewRows
+    }) || currentSummary;
+    const refreshedFeasibility = readFeasibilityReport(metadata) ?? {
+      version: BENCHMARK_ORACLE_VERSION,
+      verifiedQuestion: refreshedQuestion,
+      pass: true,
+      modesTried: [],
+      exactEvidenceHit: false,
+      conversationHit: true,
+      actorConstrainedHit: false,
+      topHits: [],
+      rationale: "Second-pass cleanup preserved previously admitted case."
+    };
+    const refreshedAdmission = buildAdmissionDecision({
+      critique: assigned.critique,
+      feasibility: refreshedFeasibility,
+      hardGuardReasons: assigned.hardGuardReasons,
+      modelDecision: String(metadata.authoringDecision ?? "").trim() === "reject" ? "reject" : "accept",
+      modelReasons: Array.isArray(metadata.rejectionReasons) ? metadata.rejectionReasons.map(String) : [],
+      ignoreTaxonomyReasons: true
+    });
+    const nextCaseType = String(row.case_type ?? "").startsWith("supplemental:")
+      ? `supplemental:${assigned.lens}:${assigned.domain}`
+      : row.case_type;
+    const nextMetadata = {
+      ...metadata,
+      semanticFrame: assigned.semanticFrame,
+      semanticFrameSummary: summarizeSemanticFrame(assigned.semanticFrame),
+      questionVoice: refreshedQuestionVoice,
+      expectedAnswerSummaryHuman: refreshedSummary,
+      authoringCritique: assigned.critique,
+      qualityGate: qualityGateFromAuthoringCritique(assigned.critique),
+      feasibilityReport: refreshedFeasibility,
+      admissionDecision: refreshedAdmission
+    };
+
+    const domainChanged = assigned.domain !== row.domain;
+    const lensChanged = assigned.lens !== row.lens;
+    const questionChanged = refreshedQuestion !== row.question;
+    const metadataChanged = JSON.stringify(nextMetadata) !== JSON.stringify(metadata);
+    if (!domainChanged && !lensChanged && !questionChanged && !metadataChanged && nextCaseType === row.case_type) continue;
+
+    await pool.query(
+      `UPDATE experiment_cases
+          SET domain = $2::text,
+              lens = $3::text,
+              case_type = $4::text,
+              question = $5::text,
+              taxonomy_path = $6::text,
+              metadata = $7::jsonb,
+              updated_at = now()
+        WHERE id = $1::uuid`,
+      [
+        row.case_id,
+        assigned.domain,
+        assigned.lens,
+        nextCaseType,
+        refreshedQuestion,
+        `${assigned.domain}.${assigned.lens}`,
+        JSON.stringify(nextMetadata)
+      ]
+    );
+    await pool.query(
+      `UPDATE experiment_judge_calibration_items
+          SET question = $2,
+              expected_answer = jsonb_set(
+                jsonb_set(COALESCE(expected_answer, '{}'::jsonb), '{expectedAnswerSummaryHuman}', to_jsonb($3::text), true),
+                '{semanticFrameSummary}',
+                to_jsonb($4::text),
+                true
+              )
+        WHERE experiment_id = $1::uuid
+          AND case_id = $5::uuid`,
+      [
+        params.experimentId,
+        refreshedQuestion,
+        refreshedSummary,
+        summarizeSemanticFrame(assigned.semanticFrame),
+        row.case_id
+      ]
+    );
+    updated.push({
+      caseId: row.case_id,
+      previousDomain: row.domain,
+      previousLens: row.lens,
+      nextDomain: assigned.domain,
+      nextLens: assigned.lens,
+      questionChanged
+    });
+  }
+
+  return {
+    ok: true,
+    experimentId: params.experimentId,
+    retagged: updated.length,
+    skipped: skipped.length,
+    sample: updated.slice(0, 20),
+    skippedSample: skipped.slice(0, 12)
+  };
+}
+
+async function trimAssistantNegativeCasesSecondPass(params: {
+  experimentId: string;
+  targetNegativeShare?: number;
+}): Promise<Record<string, unknown>> {
+  const targetNegativeShare = Number.isFinite(Number(params.targetNegativeShare))
+    ? Math.min(0.35, Math.max(0.1, Number(params.targetNegativeShare)))
+    : 0.2;
+  const rows = await pool.query<{
+    case_id: string;
+    calibration_item_id: string | null;
+    domain: string;
+    lens: string;
+    case_set: string;
+    question: string;
+    owner_validation_state: string | null;
+    metadata: Record<string, unknown>;
+    source_evidence_id: string | null;
+    evidence_ids: string[] | string;
+    conversation_ids: string[] | string;
+    created_at: string;
+    owner_verdict: string | null;
+    owner_notes: string | null;
+    assistant_verdict: string | null;
+    assistant_notes: string | null;
+    assistant_created_at: string | null;
+  }>(
+    `SELECT
+       c.id::text AS case_id,
+       li.calibration_item_id,
+       c.domain,
+       c.lens,
+       c.case_set,
+       c.question,
+       c.owner_validation_state,
+       c.metadata,
+       c.source_evidence_id::text,
+       COALESCE(c.evidence_ids::text, '{}') AS evidence_ids,
+       COALESCE(c.conversation_ids::text, '{}') AS conversation_ids,
+       c.created_at::text,
+       own.verdict AS owner_verdict,
+       own.notes AS owner_notes,
+       asst.verdict AS assistant_verdict,
+       asst.notes AS assistant_notes,
+       asst.created_at::text AS assistant_created_at
+     FROM experiment_cases c
+     LEFT JOIN LATERAL (
+       SELECT i.id::text AS calibration_item_id
+       FROM experiment_judge_calibration_items i
+       WHERE i.experiment_id = $1::uuid
+         AND i.case_id = c.id
+       ORDER BY i.updated_at DESC NULLS LAST, i.created_at DESC
+       LIMIT 1
+     ) li ON true
+     LEFT JOIN LATERAL (
+       SELECT l.verdict, COALESCE(l.notes, '') AS notes
+       FROM experiment_judge_calibration_labels l
+       WHERE l.calibration_item_id::text = li.calibration_item_id
+         AND l.reviewer = 'owner'
+       ORDER BY l.created_at DESC
+       LIMIT 1
+     ) own ON true
+     LEFT JOIN LATERAL (
+       SELECT l.verdict, COALESCE(l.notes, '') AS notes, l.created_at
+       FROM experiment_judge_calibration_labels l
+       WHERE l.calibration_item_id::text = li.calibration_item_id
+         AND l.reviewer = 'assistant'
+       ORDER BY l.created_at DESC
+       LIMIT 1
+     ) asst ON true
+     WHERE c.experiment_id = $1::uuid
+       AND c.is_stale = false`,
+    [params.experimentId]
+  );
+
+  type TrimRow = typeof rows.rows[number] & {
+    assistantSuggestion: ReturnType<typeof parseAssistantCalibrationSuggestion>;
+    topology: EvidenceFamilyTopology;
+    qualityGate: ReturnType<typeof readCaseQualityGate>;
+    critique: ReturnType<typeof readAuthoringCritique>;
+    familyKey: string;
+    negativeBucket: string;
+  };
+
+  const enriched: TrimRow[] = rows.rows.map((row) => {
+    const assistantSuggestion = parseAssistantCalibrationSuggestion({
+      verdict: row.assistant_verdict,
+      notes: row.assistant_notes,
+      createdAt: row.assistant_created_at
+    });
+    return {
+      ...row,
+      assistantSuggestion,
+      topology: readSemanticFrame(row.metadata ?? {})?.topology ?? "system_artifact",
+      qualityGate: readCaseQualityGate(row.metadata ?? {}),
+      critique: readAuthoringCritique(row.metadata ?? {}),
+      familyKey: buildCaseEvidenceFamilyKey({
+        evidenceIds: row.evidence_ids,
+        conversationIds: row.conversation_ids,
+        sourceEvidenceId: row.source_evidence_id
+      }) || `case:${row.case_id}`,
+      negativeBucket: classifyCalibrationRejectionBucket(String(assistantSuggestion?.notes ?? ""))
+    };
+  });
+
+  const positiveCount = enriched.filter((row) => {
+    const ownerVerdict = String(row.owner_verdict ?? "").trim().toLowerCase();
+    if (ownerVerdict === "yes" || String(row.owner_validation_state ?? "").trim() === "approved") return true;
+    return String(row.assistantSuggestion?.verdict ?? "").trim().toLowerCase() === "yes";
+  }).length;
+  const minRepresentativeNegatives = 6;
+  const maxRetainedNegatives = Math.max(
+    minRepresentativeNegatives,
+    Math.floor((positiveCount * targetNegativeShare) / Math.max(0.01, 1 - targetNegativeShare))
+  );
+
+  const ownerLocked = (row: TrimRow): boolean => {
+    const ownerVerdict = String(row.owner_verdict ?? "").trim().toLowerCase();
+    return ownerVerdict === "yes"
+      || ownerVerdict === "no"
+      || String(row.owner_validation_state ?? "").trim() === "approved"
+      || String(row.owner_validation_state ?? "").trim() === "rejected";
+  };
+  const assistantNoRows = enriched.filter((row) => (
+    !ownerLocked(row)
+    && String(row.assistantSuggestion?.verdict ?? "").trim().toLowerCase() === "no"
+  ));
+  const forcedRemove = assistantNoRows.filter((row) => row.topology === "assistant_thread");
+  const retainableNegatives = assistantNoRows.filter((row) => row.topology !== "assistant_thread");
+
+  const negativeRetentionScore = (row: TrimRow): number => {
+    let score = 0;
+    if (topologyIsHuman(row.topology)) score += 40;
+    if (row.topology === "human_direct_1to1") score += 10;
+    if (row.topology === "human_group_chat") score += 6;
+    score += Math.round((Number(row.qualityGate.score ?? 0) || 0) * 60);
+    score += Math.round((Number(row.critique?.dimensions.evidenceGrounding ?? 0) || 0) * 45);
+    score += Math.round((Number(row.critique?.dimensions.actorScopeFidelity ?? 0) || 0) * 35);
+    score += Math.round((Number(row.assistantSuggestion?.confidence ?? 0) || 0) * 30);
+    if (/too generic|summary/i.test(String(row.assistantSuggestion?.notes ?? ""))) score -= 18;
+    if (/not grounded|wrong actor|wrong owner|wrong person|wrong target|wrong thread|wrong context/i.test(String(row.assistantSuggestion?.notes ?? ""))) score -= 10;
+    return score;
+  };
+
+  const retained = new Map<string, TrimRow>();
+  const negativeBuckets = new Map<string, TrimRow[]>();
+  for (const row of retainableNegatives) {
+    const bucket = negativeBuckets.get(row.negativeBucket) ?? [];
+    bucket.push(row);
+    negativeBuckets.set(row.negativeBucket, bucket);
+  }
+  for (const bucketRows of negativeBuckets.values()) {
+    bucketRows.sort((left, right) => {
+      const scoreDiff = negativeRetentionScore(right) - negativeRetentionScore(left);
+      if (scoreDiff !== 0) return scoreDiff;
+      return String(left.created_at).localeCompare(String(right.created_at));
+    });
+  }
+  const bucketOrder = ["clarify_needed", "grounding_or_question", "pov_or_pronoun", "time_or_tense", "lens_mismatch", "unnatural", "other"];
+  for (const bucket of bucketOrder) {
+    if (retained.size >= maxRetainedNegatives) break;
+    const row = (negativeBuckets.get(bucket) ?? [])[0];
+    if (row) retained.set(row.case_id, row);
+  }
+  const leftovers = retainableNegatives
+    .filter((row) => !retained.has(row.case_id))
+    .sort((left, right) => {
+      const scoreDiff = negativeRetentionScore(right) - negativeRetentionScore(left);
+      if (scoreDiff !== 0) return scoreDiff;
+      return String(left.created_at).localeCompare(String(right.created_at));
+    });
+  for (const row of leftovers) {
+    if (retained.size >= maxRetainedNegatives) break;
+    retained.set(row.case_id, row);
+  }
+
+  const staleRows = [
+    ...forcedRemove,
+    ...retainableNegatives.filter((row) => !retained.has(row.case_id))
+  ];
+  const staleCaseIds = uniqueStrings(staleRows.map((row) => row.case_id));
+  if (staleCaseIds.length > 0) {
+    await pool.query(
+      `UPDATE experiment_cases
+          SET is_stale = true,
+              updated_at = now()
+        WHERE id = ANY($1::uuid[])`,
+      [staleCaseIds]
+    );
+  }
+
+  return {
+    ok: true,
+    experimentId: params.experimentId,
+    positiveCount,
+    targetNegativeShare,
+    maxRetainedNegatives,
+    assistantNoBefore: assistantNoRows.length,
+    assistantNoRetained: retained.size,
+    staleMarked: staleCaseIds.length,
+    staleAssistantThread: forcedRemove.length,
+    staleHumanOrOther: Math.max(0, staleCaseIds.length - forcedRemove.length),
+    staleSample: staleRows.slice(0, 20).map((row) => ({
+      caseId: row.case_id,
+      domain: row.domain,
+      lens: row.lens,
+      topology: row.topology,
+      question: row.question,
+      notes: String(row.assistantSuggestion?.notes ?? "")
+    }))
+  };
+}
+
+export async function secondPassCleanupBenchmarkCases(params: {
+  experimentId: string;
+  targetNegativeShare?: number;
+}): Promise<Record<string, unknown>> {
+  const duplicatePrune = await pruneDuplicateBenchmarkCases({
+    experimentId: params.experimentId,
+    refillReviewedRemoved: false
+  });
+  const retag = await retagActiveBenchmarkCasesSecondPass({
+    experimentId: params.experimentId
+  });
+  const trim = await trimAssistantNegativeCasesSecondPass({
+    experimentId: params.experimentId,
+    targetNegativeShare: params.targetNegativeShare
+  });
+  const refreshed = await refreshExperimentExpectedAnswerSummaries({
+    experimentId: params.experimentId,
+    pendingOnly: false
+  });
+  return {
+    ok: true,
+    experimentId: params.experimentId,
+    duplicatePrune,
+    retag,
+    trim,
+    refreshed
+  };
+}
+
 export async function judgeCalibrationReport(params: {
   experimentId: string;
 }): Promise<Record<string, unknown>> {
   const summary = await pool.query<{ status: string; c: string }>(
-    `SELECT status, COUNT(*)::text AS c
-     FROM experiment_judge_calibration_items
-     WHERE experiment_id = $1::uuid
-     GROUP BY status`,
+    `SELECT i.status, COUNT(*)::text AS c
+     FROM experiment_judge_calibration_items i
+     JOIN experiment_cases c ON c.id = i.case_id
+     WHERE i.experiment_id = $1::uuid
+       AND c.is_stale = false
+     GROUP BY i.status`,
     [params.experimentId]
   );
   const verdicts = await pool.query<{ verdict: string; c: string }>(
     `SELECT l.verdict, COUNT(*)::text AS c
      FROM experiment_judge_calibration_labels l
      JOIN experiment_judge_calibration_items i ON i.id = l.calibration_item_id
+     JOIN experiment_cases c ON c.id = i.case_id
      WHERE i.experiment_id = $1::uuid
+       AND c.is_stale = false
      GROUP BY l.verdict`,
     [params.experimentId]
   );
@@ -17737,7 +18319,9 @@ export async function judgeCalibrationReport(params: {
        l.created_at::text
      FROM experiment_judge_calibration_labels l
      JOIN experiment_judge_calibration_items i ON i.id = l.calibration_item_id
+     JOIN experiment_cases c ON c.id = i.case_id
      WHERE i.experiment_id = $1::uuid
+       AND c.is_stale = false
      ORDER BY l.created_at DESC
      LIMIT 50`,
     [params.experimentId]
@@ -18821,21 +19405,44 @@ async function generateSupplementalPositiveCases(params: {
     source_evidence_id: string | null;
     evidence_ids: string[] | string;
     conversation_ids: string[] | string;
+    metadata: Record<string, unknown> | null;
   }>(
     `SELECT domain,
             lens,
             lower(question) AS question,
             source_evidence_id::text,
             COALESCE(evidence_ids::text, '{}') AS evidence_ids,
-            COALESCE(conversation_ids::text, '{}') AS conversation_ids
-     FROM experiment_cases
+            COALESCE(conversation_ids::text, '{}') AS conversation_ids,
+            metadata
+      FROM experiment_cases
      WHERE experiment_id = $1::uuid
-       AND is_stale = false`,
+        AND is_stale = false`,
     [params.experimentId]
   );
   const existingQuestionKeys = new Set(
     existingRows.rows.map((row) => buildBenchmarkQuestionDedupKey(row.question))
   );
+  const activeTopologyCounts = new Map<EvidenceFamilyTopology, number>();
+  for (const row of existingRows.rows) {
+    const topology = readSemanticFrame(row.metadata ?? {})?.topology ?? "system_artifact";
+    activeTopologyCounts.set(topology, Number(activeTopologyCounts.get(topology) ?? 0) + 1);
+  }
+  const activeHumanCount = [...activeTopologyCounts.entries()]
+    .filter(([topology]) => topologyIsHuman(topology))
+    .reduce((sum, [, count]) => sum + count, 0);
+  const activeTotalCount = existingRows.rows.length;
+  let projectedHumanCaseCount = activeHumanCount;
+  let projectedTotalCaseCount = Math.max(1, activeTotalCount);
+  const canAddTopologyToProjectedMix = (topology: EvidenceFamilyTopology): boolean => {
+    if (topologyIsHuman(topology)) return true;
+    const nextTotal = projectedTotalCaseCount + 1;
+    const nextHuman = projectedHumanCaseCount;
+    return nextHuman / nextTotal >= 0.8;
+  };
+  const recordProjectedMixAdd = (topology: EvidenceFamilyTopology): void => {
+    if (topologyIsHuman(topology)) projectedHumanCaseCount += 1;
+    projectedTotalCaseCount += 1;
+  };
   const existingAnchorKeys = new Set(
     existingRows.rows
       .filter((row) => row.source_evidence_id)
@@ -18960,10 +19567,25 @@ async function generateSupplementalPositiveCases(params: {
         pairFailureCounts.set(pairKey, (pairFailureCounts.get(pairKey) ?? 0) + 1);
         continue;
       }
-      if (!authored.admissionDecision.admitted || authored.critique.score < minCritiqueScore || authored.draft.expectedBehavior !== "answer_now") {
+      if (!authored.admissionDecision.admitted && authored.admissionDecision.status !== "unresolved") {
         pairFailureCounts.set(pairKey, (pairFailureCounts.get(pairKey) ?? 0) + 1);
         continue;
       }
+      if (authored.critique.score < minCritiqueScore) {
+        pairFailureCounts.set(pairKey, (pairFailureCounts.get(pairKey) ?? 0) + 1);
+        continue;
+      }
+      const candidateTopology = authored.draft.semanticFrame?.topology ?? "system_artifact";
+      if (!canAddTopologyToProjectedMix(candidateTopology)) {
+        pairFailureCounts.set(pairKey, (pairFailureCounts.get(pairKey) ?? 0) + 1);
+        continue;
+      }
+
+      const candidateAmbiguityClass: "clear" | "clarify_required" | "unresolved" = authored.admissionDecision.status === "unresolved"
+        ? "unresolved"
+        : authored.draft.expectedBehavior === "clarify_first"
+          ? "clarify_required"
+          : "clear";
 
       const questionKey = buildBenchmarkQuestionDedupKey(authored.draft.chosenQuestion);
       if (existingQuestionKeys.has(questionKey)) {
@@ -18995,8 +19617,8 @@ async function generateSupplementalPositiveCases(params: {
         evidenceIds,
         conversationIds,
         actorIds: Array.from(new Set(contextRows.map((row) => row.actor_id).filter((id): id is string => Boolean(id)))),
-        ambiguityClass: "clear",
-        clarificationQualityExpected: false,
+        ambiguityClass: candidateAmbiguityClass,
+        clarificationQualityExpected: candidateAmbiguityClass === "clarify_required",
         metadata: {
           generationVersion: BENCHMARK_AUTHORING_VERSION,
           authoringVersion: BENCHMARK_AUTHORING_VERSION,
@@ -19019,6 +19641,7 @@ async function generateSupplementalPositiveCases(params: {
           contradictionExpected: pair.domain === "financial_behavior" || pair.lens === "confidence_scoring"
         }
       });
+      recordProjectedMixAdd(candidateTopology);
     }
   }
 
@@ -19062,6 +19685,7 @@ async function generateSupplementalPositiveCases(params: {
       const normalized = sanitizeAssistantCalibrationReview(review, chunkMap.get(calibrationItemId) ?? {});
       reviewByCalibrationItemId.set(calibrationItemId, normalized);
       const topology = readSemanticFrame(candidate.metadata)?.topology ?? "system_artifact";
+      const candidateAmbiguityClass = candidate.ambiguityClass;
       const acceptanceScore = Number(
         candidate.metadata.wholeCorpusAcceptanceScore
         ?? (candidate.metadata.authoringCritique as Record<string, unknown> | undefined)?.score
@@ -19080,7 +19704,15 @@ async function generateSupplementalPositiveCases(params: {
           )
         )
       );
-      if (normalized.verdict !== "yes" && !humanReviewOverride) continue;
+      if (normalized.verdict !== "yes" && !humanReviewOverride) {
+        const clarifyOverrideScore = candidateAmbiguityClass === "clarify_required" ? Math.max(minCritiqueScore + 0.02, 0.92) : 0.99;
+        if (acceptanceScore < clarifyOverrideScore) {
+          continue;
+        }
+        console.log(
+          `[backfill] quality override accepted family=${String(candidate.metadata.semanticFrameSummary ?? candidate.question).slice(0, 120)} score=${acceptanceScore.toFixed(2)}`
+        );
+      }
       if (humanReviewOverride) {
         console.log(
           `[backfill] human override accepted family=${String(candidate.metadata.semanticFrameSummary ?? candidate.question).slice(0, 120)} score=${acceptanceScore.toFixed(2)}`
@@ -19103,7 +19735,12 @@ async function generateSupplementalPositiveCases(params: {
         candidate,
         critiqueScore: Number(candidate.metadata.wholeCorpusAcceptanceScore ?? (candidate.metadata.authoringCritique as Record<string, unknown> | undefined)?.score ?? 0)
       }))
-      .filter((entry) => entry.critiqueScore >= Math.max(minCritiqueScore + 0.04, 0.94))
+      .filter((entry) => {
+        const threshold = entry.candidate.ambiguityClass === "clarify_required"
+          ? Math.max(minCritiqueScore + 0.01, 0.90)
+          : Math.max(minCritiqueScore + 0.04, 0.94);
+        return entry.critiqueScore >= threshold;
+      })
       .sort((a, b) => b.critiqueScore - a.critiqueScore);
     for (const entry of fallbackCandidates) {
       acceptedCandidates.push({
@@ -19175,6 +19812,374 @@ async function generateSupplementalPositiveCases(params: {
     calibrationItemsCreated: calibrationMap.size,
     caseIds: insertedCaseIds
   };
+}
+
+type PhaseGapTargets = {
+  ownerReviewedTotalMin: number;
+  reviewedClarifyMin: number;
+  approvedDomainCoverageMin: number;
+  approvedLensCoverageMin: number;
+  actorCoverageMin: number;
+  groupCoverageMin: number;
+  threadCoverageMin: number;
+  sourceCoverageMin: number;
+  timeCoverageMin: number;
+  humanCaseShareMin: number;
+  direct1to1CoverageMin: number;
+  groupChatCoverageMin: number;
+  thirdPartyCoverageMin: number;
+  distinctHumanActorsMin: number;
+  distinctHumanGroupsMin: number;
+  distinctConversationFamiliesMin: number;
+  criticalReviewedSliceMin: number;
+};
+
+type PhaseGapSnapshot = {
+  totalGap: number;
+  clarifyGap: number;
+  domainGap: number;
+  lensGap: number;
+  actorGap: number;
+  groupGap: number;
+  threadGap: number;
+  sourceGap: number;
+  timeGap: number;
+  direct1to1Gap: number;
+  groupChatGap: number;
+  thirdPartyGap: number;
+  distinctHumanActorsGap: number;
+  distinctHumanGroupsGap: number;
+  distinctConversationFamiliesGap: number;
+  criticalGap: number;
+  humanShare: number;
+  humanShareGap: boolean;
+  hasHumanTopologyGap: boolean;
+  hasAnyGap: boolean;
+};
+
+type ProjectedCoverageState = {
+  totalCases: number;
+  clarifyCases: number;
+  criticalCases: number;
+  humanCases: number;
+  assistantCases: number;
+  domains: Set<string>;
+  lenses: Set<string>;
+  actorFacets: Set<string>;
+  groupFacets: Set<string>;
+  threadFacets: Set<string>;
+  sourceFacets: Set<string>;
+  timeFacets: Set<string>;
+  directFamilies: Set<string>;
+  groupFamilies: Set<string>;
+  thirdFamilies: Set<string>;
+  humanFamilies: Set<string>;
+  humanActorFacets: Set<string>;
+  humanGroupFacets: Set<string>;
+};
+
+function mergePhaseGapTargets(stageReadiness: Record<string, { thresholds?: BenchmarkStageThresholds }>): PhaseGapTargets {
+  const out: PhaseGapTargets = {
+    ownerReviewedTotalMin: 0,
+    reviewedClarifyMin: 0,
+    approvedDomainCoverageMin: 0,
+    approvedLensCoverageMin: 0,
+    actorCoverageMin: 0,
+    groupCoverageMin: 0,
+    threadCoverageMin: 0,
+    sourceCoverageMin: 0,
+    timeCoverageMin: 0,
+    humanCaseShareMin: 0,
+    direct1to1CoverageMin: 0,
+    groupChatCoverageMin: 0,
+    thirdPartyCoverageMin: 0,
+    distinctHumanActorsMin: 0,
+    distinctHumanGroupsMin: 0,
+    distinctConversationFamiliesMin: 0,
+    criticalReviewedSliceMin: 0
+  };
+  for (const stage of ["core_ready", "selection_ready", "certification_ready"] as const) {
+    const thresholds = stageReadiness[stage]?.thresholds ?? DEFAULT_READINESS_PROFILE.stages[stage];
+    out.ownerReviewedTotalMin = Math.max(out.ownerReviewedTotalMin, Number(thresholds.ownerReviewedTotalMin ?? 0));
+    out.reviewedClarifyMin = Math.max(out.reviewedClarifyMin, Number(thresholds.reviewedClarifyMin ?? 0));
+    out.approvedDomainCoverageMin = Math.max(out.approvedDomainCoverageMin, Number(thresholds.approvedDomainCoverageMin ?? 0));
+    out.approvedLensCoverageMin = Math.max(out.approvedLensCoverageMin, Number(thresholds.approvedLensCoverageMin ?? 0));
+    out.actorCoverageMin = Math.max(out.actorCoverageMin, Number(thresholds.actorCoverageMin ?? 0));
+    out.groupCoverageMin = Math.max(out.groupCoverageMin, Number(thresholds.groupCoverageMin ?? 0));
+    out.threadCoverageMin = Math.max(out.threadCoverageMin, Number(thresholds.threadCoverageMin ?? 0));
+    out.sourceCoverageMin = Math.max(out.sourceCoverageMin, Number(thresholds.sourceCoverageMin ?? 0));
+    out.timeCoverageMin = Math.max(out.timeCoverageMin, Number(thresholds.timeCoverageMin ?? 0));
+    out.humanCaseShareMin = Math.max(out.humanCaseShareMin, Number(thresholds.humanCaseShareMin ?? 0));
+    out.direct1to1CoverageMin = Math.max(out.direct1to1CoverageMin, Number(thresholds.direct1to1CoverageMin ?? 0));
+    out.groupChatCoverageMin = Math.max(out.groupChatCoverageMin, Number(thresholds.groupChatCoverageMin ?? 0));
+    out.thirdPartyCoverageMin = Math.max(out.thirdPartyCoverageMin, Number(thresholds.thirdPartyCoverageMin ?? 0));
+    out.distinctHumanActorsMin = Math.max(out.distinctHumanActorsMin, Number(thresholds.distinctHumanActorsMin ?? 0));
+    out.distinctHumanGroupsMin = Math.max(out.distinctHumanGroupsMin, Number(thresholds.distinctHumanGroupsMin ?? 0));
+    out.distinctConversationFamiliesMin = Math.max(out.distinctConversationFamiliesMin, Number(thresholds.distinctConversationFamiliesMin ?? 0));
+    out.criticalReviewedSliceMin = Math.max(out.criticalReviewedSliceMin, Number(thresholds.criticalReviewedSliceMin ?? 0));
+  }
+  return out;
+}
+
+function createProjectedCoverageStateFromRows(rows: Array<{
+  domain: string;
+  lens: string;
+  case_set: string;
+  ambiguity_class: string;
+  metadata: Record<string, unknown> | null;
+  source_evidence_id: string | null;
+  evidence_ids: string[] | string;
+  conversation_ids: string[] | string;
+}>): ProjectedCoverageState {
+  const state: ProjectedCoverageState = {
+    totalCases: 0,
+    clarifyCases: 0,
+    criticalCases: 0,
+    humanCases: 0,
+    assistantCases: 0,
+    domains: new Set<string>(),
+    lenses: new Set<string>(),
+    actorFacets: new Set<string>(),
+    groupFacets: new Set<string>(),
+    threadFacets: new Set<string>(),
+    sourceFacets: new Set<string>(),
+    timeFacets: new Set<string>(),
+    directFamilies: new Set<string>(),
+    groupFamilies: new Set<string>(),
+    thirdFamilies: new Set<string>(),
+    humanFamilies: new Set<string>(),
+    humanActorFacets: new Set<string>(),
+    humanGroupFacets: new Set<string>()
+  };
+  for (const row of rows) {
+    state.totalCases += 1;
+    if (row.ambiguity_class === "clarify_required") state.clarifyCases += 1;
+    if (row.case_set === "critical") state.criticalCases += 1;
+    const domainKey = lowerText(row.domain).trim();
+    if (domainKey) state.domains.add(domainKey);
+    const lensKey = lowerText(row.lens).trim();
+    if (lensKey) state.lenses.add(lensKey);
+    const frame = readSemanticFrame(row.metadata ?? {});
+    const facets = frame?.retrievalFacets;
+    if (facets) {
+      for (const value of facets.actorNames) {
+        const key = lowerText(value).trim();
+        if (key) state.actorFacets.add(key);
+      }
+      for (const value of facets.groupLabels) {
+        const key = lowerText(value).trim();
+        if (key) state.groupFacets.add(key);
+      }
+      for (const value of facets.threadTitles) {
+        const key = lowerText(value).trim();
+        if (key) state.threadFacets.add(key);
+      }
+      for (const value of facets.sourceSystems) {
+        const key = lowerText(value).trim();
+        if (key) state.sourceFacets.add(key);
+      }
+      for (const value of facets.timeConstraints) {
+        const key = lowerText(value).trim();
+        if (key) state.timeFacets.add(key);
+      }
+    }
+    const topology = frame?.topology ?? "system_artifact";
+    const familyKey = buildCaseEvidenceFamilyKey({
+      evidenceIds: row.evidence_ids,
+      conversationIds: row.conversation_ids,
+      sourceEvidenceId: row.source_evidence_id
+    });
+    if (topologyIsHuman(topology)) {
+      state.humanCases += 1;
+      if (familyKey) state.humanFamilies.add(familyKey);
+      if (topology === "human_direct_1to1" && familyKey) state.directFamilies.add(familyKey);
+      if (topology === "human_group_chat" && familyKey) state.groupFamilies.add(familyKey);
+      if (topology === "third_party_human" && familyKey) state.thirdFamilies.add(familyKey);
+      if (facets) {
+        for (const name of facets.actorNames) {
+          if (!isLikelyHumanFacetName(name)) continue;
+          const key = lowerText(name).trim();
+          if (key) state.humanActorFacets.add(key);
+        }
+        for (const label of facets.groupLabels) {
+          const key = lowerText(label).trim();
+          if (key) state.humanGroupFacets.add(key);
+        }
+      }
+    } else if (topology === "assistant_thread") {
+      state.assistantCases += 1;
+    }
+  }
+  return state;
+}
+
+function computePhaseGapSnapshot(state: ProjectedCoverageState, targets: PhaseGapTargets): PhaseGapSnapshot {
+  const humanShare = state.totalCases > 0 ? state.humanCases / state.totalCases : 0;
+  const out: PhaseGapSnapshot = {
+    totalGap: Math.max(0, targets.ownerReviewedTotalMin - state.totalCases),
+    clarifyGap: Math.max(0, targets.reviewedClarifyMin - state.clarifyCases),
+    domainGap: Math.max(0, targets.approvedDomainCoverageMin - state.domains.size),
+    lensGap: Math.max(0, targets.approvedLensCoverageMin - state.lenses.size),
+    actorGap: Math.max(0, targets.actorCoverageMin - state.actorFacets.size),
+    groupGap: Math.max(0, targets.groupCoverageMin - state.groupFacets.size),
+    threadGap: Math.max(0, targets.threadCoverageMin - state.threadFacets.size),
+    sourceGap: Math.max(0, targets.sourceCoverageMin - state.sourceFacets.size),
+    timeGap: Math.max(0, targets.timeCoverageMin - state.timeFacets.size),
+    direct1to1Gap: Math.max(0, targets.direct1to1CoverageMin - state.directFamilies.size),
+    groupChatGap: Math.max(0, targets.groupChatCoverageMin - state.groupFamilies.size),
+    thirdPartyGap: Math.max(0, targets.thirdPartyCoverageMin - state.thirdFamilies.size),
+    distinctHumanActorsGap: Math.max(0, targets.distinctHumanActorsMin - state.humanActorFacets.size),
+    distinctHumanGroupsGap: Math.max(0, targets.distinctHumanGroupsMin - state.humanGroupFacets.size),
+    distinctConversationFamiliesGap: Math.max(0, targets.distinctConversationFamiliesMin - state.humanFamilies.size),
+    criticalGap: Math.max(0, targets.criticalReviewedSliceMin - state.criticalCases),
+    humanShare,
+    humanShareGap: humanShare + 1e-9 < targets.humanCaseShareMin,
+    hasHumanTopologyGap: false,
+    hasAnyGap: false
+  };
+  out.hasHumanTopologyGap = out.humanShareGap
+    || out.direct1to1Gap > 0
+    || out.groupChatGap > 0
+    || out.thirdPartyGap > 0
+    || out.distinctHumanActorsGap > 0
+    || out.distinctHumanGroupsGap > 0
+    || out.distinctConversationFamiliesGap > 0;
+  out.hasAnyGap = out.totalGap > 0
+    || out.clarifyGap > 0
+    || out.domainGap > 0
+    || out.lensGap > 0
+    || out.actorGap > 0
+    || out.groupGap > 0
+    || out.threadGap > 0
+    || out.sourceGap > 0
+    || out.timeGap > 0
+    || out.direct1to1Gap > 0
+    || out.groupChatGap > 0
+    || out.thirdPartyGap > 0
+    || out.distinctHumanActorsGap > 0
+    || out.distinctHumanGroupsGap > 0
+    || out.distinctConversationFamiliesGap > 0
+    || out.criticalGap > 0
+    || out.humanShareGap;
+  return out;
+}
+
+function evaluatePhaseGapContributions(params: {
+  candidate: SupplementalGeneratedCandidate;
+  projected: ProjectedCoverageState;
+  gap: PhaseGapSnapshot;
+  topology: EvidenceFamilyTopology;
+  familyKey: string | null;
+}): string[] {
+  const { candidate, projected, gap, topology, familyKey } = params;
+  if (gap.humanShareGap && !topologyIsHuman(topology)) return [];
+  if (gap.hasHumanTopologyGap && !topologyIsHuman(topology)) return [];
+  const frame = readSemanticFrame(candidate.metadata);
+  const facets = frame?.retrievalFacets;
+  const actorFacetKeys = new Set(
+    (facets?.actorNames ?? [])
+      .map((value) => lowerText(value).trim())
+      .filter(Boolean)
+  );
+  const groupFacetKeys = new Set(
+    (facets?.groupLabels ?? [])
+      .map((value) => lowerText(value).trim())
+      .filter(Boolean)
+  );
+  const threadFacetKeys = new Set(
+    (facets?.threadTitles ?? [])
+      .map((value) => lowerText(value).trim())
+      .filter(Boolean)
+  );
+  const sourceFacetKeys = new Set(
+    (facets?.sourceSystems ?? [])
+      .map((value) => lowerText(value).trim())
+      .filter(Boolean)
+  );
+  const timeFacetKeys = new Set(
+    (facets?.timeConstraints ?? [])
+      .map((value) => lowerText(value).trim())
+      .filter(Boolean)
+  );
+  const humanActorFacetKeys = new Set(
+    [...actorFacetKeys]
+      .filter((value) => isLikelyHumanFacetName(value))
+  );
+  const contributions: string[] = [];
+  if (gap.totalGap > 0) contributions.push("owner_reviewed_supply");
+  if (gap.clarifyGap > 0 && candidate.ambiguityClass === "clarify_required") contributions.push("reviewed_clarify_supply");
+  if (gap.criticalGap > 0 && candidate.caseSet === "critical") contributions.push("critical_slice_supply");
+  const domainKey = lowerText(candidate.domain).trim();
+  if (gap.domainGap > 0 && domainKey && !projected.domains.has(domainKey)) contributions.push("domain_coverage");
+  const lensKey = lowerText(candidate.lens).trim();
+  if (gap.lensGap > 0 && lensKey && !projected.lenses.has(lensKey)) contributions.push("lens_coverage");
+  if (gap.actorGap > 0 && [...actorFacetKeys].some((value) => !projected.actorFacets.has(value))) contributions.push("actor_coverage");
+  if (gap.groupGap > 0 && [...groupFacetKeys].some((value) => !projected.groupFacets.has(value))) contributions.push("group_coverage");
+  if (gap.threadGap > 0 && [...threadFacetKeys].some((value) => !projected.threadFacets.has(value))) contributions.push("thread_coverage");
+  if (gap.sourceGap > 0 && [...sourceFacetKeys].some((value) => !projected.sourceFacets.has(value))) contributions.push("source_coverage");
+  if (gap.timeGap > 0 && [...timeFacetKeys].some((value) => !projected.timeFacets.has(value))) contributions.push("time_coverage");
+  if (gap.humanShareGap && topologyIsHuman(topology)) contributions.push("human_share");
+  if (gap.direct1to1Gap > 0 && topology === "human_direct_1to1" && familyKey && !projected.directFamilies.has(familyKey)) contributions.push("direct_1to1");
+  if (gap.groupChatGap > 0 && topology === "human_group_chat" && familyKey && !projected.groupFamilies.has(familyKey)) contributions.push("group_chat");
+  if (gap.thirdPartyGap > 0 && topology === "third_party_human" && familyKey && !projected.thirdFamilies.has(familyKey)) contributions.push("third_party");
+  if (gap.distinctHumanActorsGap > 0 && [...humanActorFacetKeys].some((value) => !projected.humanActorFacets.has(value))) contributions.push("distinct_human_actors");
+  if (gap.distinctHumanGroupsGap > 0 && [...groupFacetKeys].some((value) => !projected.humanGroupFacets.has(value))) contributions.push("distinct_human_groups");
+  if (gap.distinctConversationFamiliesGap > 0 && topologyIsHuman(topology) && familyKey && !projected.humanFamilies.has(familyKey)) {
+    contributions.push("distinct_human_families");
+  }
+  return uniqueStrings(contributions);
+}
+
+function applyCandidateToProjectedCoverage(params: {
+  state: ProjectedCoverageState;
+  candidate: SupplementalGeneratedCandidate;
+  topology: EvidenceFamilyTopology;
+  familyKey: string | null;
+}): void {
+  const { state, candidate, topology, familyKey } = params;
+  state.totalCases += 1;
+  if (candidate.ambiguityClass === "clarify_required") state.clarifyCases += 1;
+  if (candidate.caseSet === "critical") state.criticalCases += 1;
+  const domainKey = lowerText(candidate.domain).trim();
+  if (domainKey) state.domains.add(domainKey);
+  const lensKey = lowerText(candidate.lens).trim();
+  if (lensKey) state.lenses.add(lensKey);
+  const frame = readSemanticFrame(candidate.metadata);
+  const facets = frame?.retrievalFacets;
+  if (facets) {
+    for (const value of facets.actorNames) {
+      const key = lowerText(value).trim();
+      if (key) state.actorFacets.add(key);
+      if (key && isLikelyHumanFacetName(value)) state.humanActorFacets.add(key);
+    }
+    for (const value of facets.groupLabels) {
+      const key = lowerText(value).trim();
+      if (!key) continue;
+      state.groupFacets.add(key);
+      state.humanGroupFacets.add(key);
+    }
+    for (const value of facets.threadTitles) {
+      const key = lowerText(value).trim();
+      if (key) state.threadFacets.add(key);
+    }
+    for (const value of facets.sourceSystems) {
+      const key = lowerText(value).trim();
+      if (key) state.sourceFacets.add(key);
+    }
+    for (const value of facets.timeConstraints) {
+      const key = lowerText(value).trim();
+      if (key) state.timeFacets.add(key);
+    }
+  }
+  if (topologyIsHuman(topology)) {
+    state.humanCases += 1;
+    if (familyKey) state.humanFamilies.add(familyKey);
+    if (topology === "human_direct_1to1" && familyKey) state.directFamilies.add(familyKey);
+    if (topology === "human_group_chat" && familyKey) state.groupFamilies.add(familyKey);
+    if (topology === "third_party_human" && familyKey) state.thirdFamilies.add(familyKey);
+  } else if (topology === "assistant_thread") {
+    state.assistantCases += 1;
+  }
 }
 
 async function generateWholeCorpusFamilyPositiveCases(params: {
@@ -19310,12 +20315,48 @@ async function generateWholeCorpusFamilyPositiveCases(params: {
        AND is_stale = false`,
     [params.experimentId]
   );
+  const readiness = await experimentPreloopReadiness({
+    experimentId: params.experimentId
+  });
+  const phaseGapTargets = mergePhaseGapTargets(
+    (readiness.stageReadiness ?? {}) as Record<string, { thresholds?: BenchmarkStageThresholds }>
+  );
+  const projectedCoverage = createProjectedCoverageStateFromRows(
+    refreshedExistingRows.rows.map((row) => ({
+      domain: row.domain,
+      lens: row.lens,
+      case_set: row.case_set,
+      ambiguity_class: row.ambiguity_class,
+      metadata: row.metadata,
+      source_evidence_id: row.source_evidence_id,
+      evidence_ids: row.evidence_ids,
+      conversation_ids: row.conversation_ids
+    }))
+  );
+  const initialGapSnapshot = computePhaseGapSnapshot(projectedCoverage, phaseGapTargets);
+  if (!initialGapSnapshot.hasAnyGap) {
+    console.log("[backfill] all phase gaps already satisfied; skipping positive generation");
+    return {
+      requested: targetCount,
+      candidatePool: 0,
+      assistantAccepted: 0,
+      inserted: 0,
+      calibrationItemsCreated: 0,
+      caseIds: [],
+      scannedFamilies: 0,
+      familySeedCount: 0,
+      nextFamilyOffset: 0,
+      rejectionSamples: []
+    };
+  }
   const existingQuestionKeys = new Set(
     refreshedExistingRows.rows.map((row) => buildBenchmarkQuestionDedupKey(row.question))
   );
   const existingFamilyState = new Map<string, ActiveFamilyCaseState>();
   const activeTopologyCounts = new Map<EvidenceFamilyTopology, number>();
   for (const row of refreshedExistingRows.rows) {
+    const topology = readSemanticFrame(row.metadata ?? {})?.topology ?? "system_artifact";
+    activeTopologyCounts.set(topology, Number(activeTopologyCounts.get(topology) ?? 0) + 1);
     const familyKey = buildCaseEvidenceFamilyKey({
       evidenceIds: row.evidence_ids,
       conversationIds: row.conversation_ids,
@@ -19327,14 +20368,10 @@ async function generateWholeCorpusFamilyPositiveCases(params: {
     if (row.ambiguity_class === "clear") current.clear += 1;
     if (row.ambiguity_class === "clarify_required") current.clarify += 1;
     existingFamilyState.set(familyKey, current);
-    const topology = readSemanticFrame(row.metadata ?? {})?.topology ?? "system_artifact";
-    activeTopologyCounts.set(topology, Number(activeTopologyCounts.get(topology) ?? 0) + 1);
   }
-  const activeHumanCount = [...activeTopologyCounts.entries()]
-    .filter(([topology]) => topologyIsHuman(topology))
-    .reduce((sum, [, count]) => sum + count, 0);
-  const activeTotalCount = refreshedExistingRows.rows.length;
-  const activeHumanShare = activeTotalCount > 0 ? activeHumanCount / activeTotalCount : 0;
+  const activeHumanCount = projectedCoverage.humanCases;
+  const activeTotalCount = Math.max(1, projectedCoverage.totalCases);
+  const activeHumanShare = projectedCoverage.humanCases / activeTotalCount;
   const activeSourceRows = await pool.query<{ source_system: string; c: string }>(
     `WITH active AS (
        SELECT id, evidence_ids
@@ -19391,6 +20428,27 @@ async function generateWholeCorpusFamilyPositiveCases(params: {
   const candidateFamilyState = new Map<string, ActiveFamilyCaseState>();
   const attemptedFamilyLens = new Set<string>();
   const conversationContextCache = new Map<string, SeedEvidenceCandidate[]>();
+  const targetCriticalCount = Math.max(0, Math.ceil(targetCount * 0.35));
+  const targetCertificationCount = Math.max(0, Math.ceil(targetCount * 0.22));
+  let remainingCriticalCount = targetCriticalCount;
+  let remainingCertificationCount = targetCertificationCount;
+  const selectCaseSetForPositiveBatch = (ambiguityClass: "clear" | "clarify_required" | "unresolved"): "dev" | "critical" | "certification" => {
+    const gapSnapshot = computePhaseGapSnapshot(projectedCoverage, phaseGapTargets);
+    if (gapSnapshot.criticalGap > 0) return "critical";
+    if ((ambiguityClass === "clarify_required" || ambiguityClass === "unresolved") && remainingCriticalCount > 0) {
+      remainingCriticalCount -= 1;
+      return "critical";
+    }
+    if (remainingCriticalCount > 0) {
+      remainingCriticalCount -= 1;
+      return "critical";
+    }
+    if (remainingCertificationCount > 0) {
+      remainingCertificationCount -= 1;
+      return "certification";
+    }
+    return pickSetLabel(candidatePool.length + 1);
+  };
   const maxCandidatePool = Math.max(targetCount * 6, 60);
   // Whole-corpus mining should persist progress as soon as it finds one strong family.
   // Larger pools were causing accepted candidates to sit in-memory until the batch timed out.
@@ -19432,12 +20490,17 @@ async function generateWholeCorpusFamilyPositiveCases(params: {
 
   familyLoop:
   for (const family of rotatedFamilySeeds) {
+    if (!computePhaseGapSnapshot(projectedCoverage, phaseGapTargets).hasAnyGap) {
+      console.log("[backfill] gap-only target satisfied; stopping batch early");
+      break;
+    }
     const familyStartedAt = Date.now();
     const familyTopology = classifyConversationTopology({
       anchor: family.anchorRows[0],
       contextRows: family.anchorRows
     });
-    if (familyTopology === "assistant_thread" && activeHumanShare <= 0.8) {
+    const currentGapSnapshot = computePhaseGapSnapshot(projectedCoverage, phaseGapTargets);
+    if (currentGapSnapshot.humanShareGap && !topologyIsHuman(familyTopology)) {
       continue;
     }
     const familyHasNonUserHumanAnchor = family.anchorRows.some((row) => {
@@ -19623,34 +20686,22 @@ async function generateWholeCorpusFamilyPositiveCases(params: {
           if (familyFailureCount >= 3) continue familyLoop;
           continue;
         }
-        if (authored.draft.expectedBehavior !== "answer_now") {
-          pushRejectionSample({
-            familyKey: family.familyKey,
-            domain: authored.domain,
-            lens: authored.lens,
-            reason: `expected_behavior_${authored.draft.expectedBehavior}`,
-            anchor
-          });
-          continue;
-        }
+        const candidateAmbiguityClass: "clear" | "clarify_required" | "unresolved" = authored.admissionDecision.status === "unresolved"
+          ? "unresolved"
+          : authored.draft.expectedBehavior === "clarify_first"
+            ? "clarify_required"
+            : "clear";
+        const candidateTopology = authored.draft.semanticFrame?.topology ?? "system_artifact";
+        const caseSet = selectCaseSetForPositiveBatch(candidateAmbiguityClass);
 
         const questionKey = buildBenchmarkQuestionDedupKey(authored.draft.chosenQuestion);
         if (existingQuestionKeys.has(questionKey)) continue;
 
-        existingQuestionKeys.add(questionKey);
-        if (familyKey) {
-          const current = candidateFamilyState.get(familyKey) ?? { total: 0, clear: 0, clarify: 0 };
-          current.total += 1;
-          current.clear += 1;
-          candidateFamilyState.set(familyKey, current);
-        }
-        familiesSinceAcceptance = 0;
-        console.log(`[backfill] accepted candidate ${authored.domain}/${authored.lens} family=${family.familyKey} score=${acceptanceScore.toFixed(2)}`);
-        candidatePool.push({
+        const candidateDraft: SupplementalGeneratedCandidate = {
           calibrationItemId: randomUUID(),
           domain: authored.domain,
           lens: authored.lens,
-          caseSet: pickSetLabel(candidatePool.length + 1),
+          caseSet,
           question: authored.draft.chosenQuestion,
           caseType: `supplemental:${authored.lens}:${authored.domain}`,
           sourceEvidenceId: anchor.canonical_id,
@@ -19667,8 +20718,8 @@ async function generateWholeCorpusFamilyPositiveCases(params: {
           evidenceIds,
           conversationIds,
           actorIds: Array.from(new Set(contextRows.map((row) => row.actor_id).filter((id): id is string => Boolean(id)))),
-          ambiguityClass: "clear",
-          clarificationQualityExpected: false,
+          ambiguityClass: candidateAmbiguityClass,
+          clarificationQualityExpected: candidateAmbiguityClass === "clarify_required",
           metadata: {
             generationVersion: BENCHMARK_AUTHORING_VERSION,
             authoringVersion: BENCHMARK_AUTHORING_VERSION,
@@ -19692,7 +20743,49 @@ async function generateWholeCorpusFamilyPositiveCases(params: {
             semanticFrameSummary: summarizeSemanticFrame(authored.draft.semanticFrame),
             contradictionExpected: authored.domain === "financial_behavior" || authored.lens === "confidence_scoring"
           }
+        };
+        const gapSnapshot = computePhaseGapSnapshot(projectedCoverage, phaseGapTargets);
+        const phaseGapContributions = evaluatePhaseGapContributions({
+          candidate: candidateDraft,
+          projected: projectedCoverage,
+          gap: gapSnapshot,
+          topology: candidateTopology,
+          familyKey
         });
+        if (phaseGapContributions.length <= 0) {
+          pushRejectionSample({
+            familyKey: family.familyKey,
+            domain: authored.domain,
+            lens: authored.lens,
+            reason: "does_not_reduce_phase_gap",
+            anchor
+          });
+          familyFailureCount += 1;
+          if (familyFailureCount >= 3) continue familyLoop;
+          continue;
+        }
+        candidateDraft.metadata.phaseGapContributions = phaseGapContributions;
+
+        existingQuestionKeys.add(questionKey);
+        if (familyKey) {
+          const current = candidateFamilyState.get(familyKey) ?? { total: 0, clear: 0, clarify: 0 };
+          current.total += 1;
+          if (candidateAmbiguityClass === "clarify_required") current.clarify += 1;
+          else current.clear += 1;
+          candidateFamilyState.set(familyKey, current);
+        }
+        applyCandidateToProjectedCoverage({
+          state: projectedCoverage,
+          candidate: candidateDraft,
+          topology: candidateTopology,
+          familyKey
+        });
+        familiesSinceAcceptance = 0;
+        console.log(
+          `[backfill] accepted candidate ${authored.domain}/${authored.lens} family=${family.familyKey} `
+          + `score=${acceptanceScore.toFixed(2)} gaps=${phaseGapContributions.join(",")}`
+        );
+        candidatePool.push(candidateDraft);
         if (candidatePool.length >= candidatePoolFlushTarget) {
           console.log(`[backfill] flush target reached candidatePool=${candidatePool.length}`);
           break familyLoop;

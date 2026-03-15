@@ -1,0 +1,8 @@
+actorId,canonicalName,actorTypes,messageCount,subject,object,possessive,confidence,source,rationale,flags,sampleMessages
+7cc122ff-96a1-4c54-8992-85ceca987ca6,3 Ladies w/ 3 Dudes,contact,0,they,them,their,0.2,messageCount,No messages or further context leads to the use of they/them.,,
+b721d842-0996-4225-bedc-690945073589,ALPHA TOURS 24/7,contact,1,they,them,their,0.2,sampleMessages,"Only one message present, insufficient for any clear pronoun attribution.",single_message_contact,
+17983164-d9f6-4658-9d85-3f7cc5e7e7ea,Parabens,contact,0,they,them,their,0.2,no messages available,No evidence to support a specific gender; ambiguous name.,,
+170a7bc1-9be5-4d06-89e8-588dc82459e2,Sendoff party,contact,0,they,them,their,0.25,ambiguous_default,Model did not return a pronoun set for this actor; using neutral fallback.,,
+beb9c225-1c54-4201-9f69-2b931329dc1e,Neighbors 4eva!,contact,3,they,them,their,0.3,actorTypes,Group name; unclear individual attribution.,,you changed this group's icon || you changed this group's icon
+2f14a287-5566-4481-9f1c-c876c23face9,Gville ?,contact,1,they,them,their,0.4,sampleMessages,"The ambiguity of 'Gville ?' makes it unclear regarding gender, necessitating a neutral pronoun.",single_message_contact,
+6b929ca7-0b8a-41ca-a0db-d725ae6c2d46,Marinete Gomes,contact,99,they,them,their,0.4,canonicalName,Ambiguous name (~ Marinete Gomes) may indicate non-binary preferences.,,monique maninha removed ~ marinete gomes || que linda! já pode fazer parte do grupo de louvor.😍 || eu já tive um tempo atrás e vc não consegue nem virar na cama. || é dor pra todos os lados.

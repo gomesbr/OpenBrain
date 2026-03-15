@@ -15,6 +15,24 @@ interface SessionState {
 
 const sessions = new Map<string, SessionState>();
 
+type AuthUserRow = {
+  id: string;
+  user_name: string;
+  password_hash: string;
+  is_active: boolean;
+};
+
+async function findAuthUserByName(normalizedUserName: string): Promise<AuthUserRow | null> {
+  const rows = await pool.query<AuthUserRow>(
+    `SELECT id, user_name, password_hash, is_active
+       FROM auth_users
+      WHERE LOWER(user_name) = LOWER($1)
+      ORDER BY created_at ASC`,
+    [normalizedUserName]
+  );
+  return rows.rows[0] || null;
+}
+
 function nowMs(): number {
   return Date.now();
 }
@@ -51,18 +69,44 @@ export async function bootstrapAuthUser(): Promise<void> {
   if (!userName) {
     throw new Error("OPENBRAIN_APP_USER must not be empty");
   }
-
-  const existing = await pool.query<{ id: string }>(
-    `SELECT id FROM auth_users WHERE user_name = $1 LIMIT 1`,
-    [userName]
-  );
-
-  if (existing.rowCount && existing.rows[0]?.id) {
-    return;
-  }
-
   if (!config.appPassword) {
     throw new Error("OPENBRAIN_APP_PASSWORD is required to bootstrap login user");
+  }
+
+  const existingRow = await findAuthUserByName(userName);
+
+  if (existingRow) {
+    if (normalizeUserName(existingRow.user_name) !== userName) {
+      await pool.query(`UPDATE auth_users SET user_name = $1 WHERE id = $2`, [userName, existingRow.id]);
+      existingRow.user_name = userName;
+    }
+
+    if (existingRow.is_active !== true) {
+      await pool.query(`UPDATE auth_users SET is_active = true WHERE id = $1`, [existingRow.id]);
+    }
+
+    let passwordMatches = false;
+    try {
+      passwordMatches = await verify(existingRow.password_hash, config.appPassword);
+    } catch {
+      passwordMatches = false;
+    }
+    if (!passwordMatches) {
+      const passwordHash = await hash(config.appPassword, {
+        algorithm: Algorithm.Argon2id,
+        memoryCost: 19456,
+        timeCost: 2,
+        parallelism: 1
+      });
+      await pool.query(
+        `UPDATE auth_users
+           SET password_hash = $2,
+               rotated_at = now()
+         WHERE id = $1`,
+        [existingRow.id, passwordHash]
+      );
+    }
+    return;
   }
 
   const passwordHash = await hash(config.appPassword, {
@@ -84,7 +128,8 @@ async function checkCredentials(password: string): Promise<string | null> {
   const row = await pool.query<{ user_name: string; password_hash: string; is_active: boolean }>(
     `SELECT user_name, password_hash, is_active
        FROM auth_users
-      WHERE user_name = $1
+      WHERE LOWER(user_name) = LOWER($1)
+      ORDER BY is_active DESC, updated_at DESC
       LIMIT 1`,
     [userName]
   );
@@ -198,7 +243,7 @@ export async function rotateUserPassword(
   const row = await pool.query<{ password_hash: string; is_active: boolean }>(
     `SELECT password_hash, is_active
        FROM auth_users
-      WHERE user_name = $1
+      WHERE LOWER(user_name) = LOWER($1)
       LIMIT 1`,
     [normalizeUserName(userName)]
   );
@@ -219,8 +264,9 @@ export async function rotateUserPassword(
     `UPDATE auth_users
         SET password_hash = $2,
             rotated_at = now()
-      WHERE user_name = $1`,
+      WHERE LOWER(user_name) = LOWER($1)`,
     [normalizeUserName(userName), nextHash]
   );
   return true;
 }
+

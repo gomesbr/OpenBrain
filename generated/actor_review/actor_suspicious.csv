@@ -1,18 +1,56 @@
-actor_id,canonical_name,actor_type,message_count,source_systems,phone_numbers,flags
-6006f107-7037-444c-997a-ca404553c5a5,Sai,contact,50,whatsapp,,whatsapp_single_token_name
-3f100d9f-487a-4e7d-8c0a-9e0b131b7dc8,Couples,contact,3,whatsapp,,filler_like_token
-a4d7cba8-f8eb-4941-972c-483aadf4dab4,Jacob Wright,contact,1,whatsapp,,single_message_contact
-79eac68a-7bdd-40a7-8333-8d22a41d8115,Karina,contact,1,whatsapp,,single_message_contact
-e55c8e0a-afbb-42e7-8e32-4186125287e5,Vic,contact,1,whatsapp,,short_low_signal|single_message_contact|whatsapp_single_token_name
-79163ada-86d1-4336-ae39-3e6327fa1692,Yan Yang,contact,1,whatsapp,,single_message_contact
-a623e798-8c11-4ba4-bf8d-4f7fd79cc345, Ale,contact,0,,,short_low_signal
-a451d041-e17b-4578-b863-ca5e33469c46, Ana,contact,0,,,short_low_signal
-1bd491ca-20ee-4e99-a89e-cde9ee41b718, Dri,contact,0,,,short_low_signal
-17542fe3-bc02-47ec-983f-35770c121494, Ivàn,contact,0,,,short_low_signal
-917ce06e-3025-4bd5-b6ce-9c663094e018, Jan,contact,0,,,short_low_signal
-42c0b2fe-b57b-4278-8f43-6711816358bf, Jose,contact,0,,,short_low_signal
-4c2af5fb-4289-4cb8-95bb-a8b37423ea91, Kris🧚‍♂️✨️,contact,0,,,short_low_signal
-02233c63-cc42-460b-ae12-ea7281b90989, Mari,contact,0,,,short_low_signal
-68715984-00ca-4c3e-9dc2-84dc314eb9b3, Ryan,contact,0,,,short_low_signal
-00968191-ec4f-48de-bce9-b00698915aba, Tony,contact,0,,,short_low_signal
-bbba776c-6b3c-47c6-89a6-aa399a70623a, ˣɢʀɪɴɢᴀㅤᵖᵈᵐ,contact,0,,,no_alpha_chars
+actor_id,canonical_name,actor_type,actor_types,message_count,source_systems,phone_numbers,flags
+ddd454e6-0b7d-46b4-8a28-5c3ab080cb05,Dri,contact,contact,216,whatsapp,,whatsapp_single_token_name
+1a6b666e-9b79-4ac9-8cd9-548dd3ada756,ˣɢʀɪɴɢᴀㅤᵖᵈᵐ,contact,contact,166,whatsapp,,no_alpha_chars
+72924468-3cbb-4298-bf23-924334f2372d,‪+55 32 99826‑0043‬,contact,contact,161,whatsapp,+5532998260043,no_alpha_chars
+82dcbd7a-91aa-41b6-9a86-e6989703a61d,‪+55 32 99806‑0043‬,contact,contact,104,whatsapp,+5532998060043,no_alpha_chars
+6006f107-7037-444c-997a-ca404553c5a5,Sai,contact,contact,50,whatsapp,,whatsapp_single_token_name
+6104e098-233a-46ae-b4d9-e10d7e44ae2d,Ale,contact,contact,22,whatsapp,,whatsapp_single_token_name
+c09a5045-96be-402a-bf3b-330355065646,‪+55 22 99916‑0043‬,contact,contact,15,whatsapp,+5522999160043,no_alpha_chars
+d1ab5184-4762-464c-b131-75e419cb3dd8,Ana,contact,contact,11,whatsapp,,whatsapp_single_token_name
+ac9e5229-697c-423d-9483-96194167f97b,❤️💛💚💙,contact,contact,10,whatsapp,,no_alpha_chars
+3f100d9f-487a-4e7d-8c0a-9e0b131b7dc8,Couples,contact,contact,3,whatsapp,,filler_like_token
+6bf72b93-68ae-4a91-8ac0-fc95b4350d30,Jan,contact,contact,3,whatsapp,,short_low_signal|whatsapp_single_token_name
+71f83109-7dab-405c-948f-37490bb5ac42,Jose,contact,contact,3,whatsapp,,short_low_signal
+ee009c53-6aac-46b8-a88d-ab56eec261bb,‪+1 (254) 630‑6953‬,contact,contact,2,whatsapp,+12546306953,no_alpha_chars
+50780f47-ffe9-4d29-ab0c-4f8443265f49,‪+1 (513) 652‑3328‬,contact,contact,2,whatsapp,+15136523328,no_alpha_chars
+5e7b8366-e414-441b-973a-ea839d98c130,‪+1 (561) 670‑5595‬,contact,contact,2,whatsapp,+15616705595,no_alpha_chars
+520d28f0-a83e-47e9-a353-3c1bbeb6f085,‪+1 (718) 813‑4138‬,contact,contact,2,whatsapp,+17188134138,no_alpha_chars
+491ff22e-ccc6-4957-a307-1f17f04e1b0b,‪+1 (843) 995‑1117‬,contact,contact,2,whatsapp,+18439951117,no_alpha_chars
+c3bd6b4a-3bf7-4007-8e19-e2758fa23802,‪+1 (856) 441‑3682‬,contact,contact,2,whatsapp,+18564413682,no_alpha_chars
+a260f61c-0eee-4e22-a1b2-8bfe1bd752e4,‪+1 (919) 641‑0781‬,contact,contact,2,whatsapp,+19196410781,no_alpha_chars
+8768aa6a-0c24-4785-a448-cba3bb126d60,Fam,contact,contact,2,whatsapp,,short_low_signal|whatsapp_single_token_name
+19958716-1d29-4f49-9812-9feaaba5699f,‪+1 (646) 342‑9556‬,contact,contact,1,whatsapp,+16463429556,no_alpha_chars|single_message_contact
+82d0ca4b-6a2e-47db-ac21-e9d46c2210bf,‪+1 (804) 314‑0331‬,contact,contact,1,whatsapp,+18043140331,no_alpha_chars|single_message_contact
+d74a0d15-7cf2-4b4d-baae-2f197be516d8,‪+1 (954) 560‑3187‬,contact,contact,1,whatsapp,+19545603187,no_alpha_chars|single_message_contact
+ae242719-43eb-4707-86ce-df3d51871dd7,‪+1 (973) 906‑8129‬,contact,contact,1,whatsapp,+19739068129,no_alpha_chars|single_message_contact
+306165c2-e70c-4ea8-bd80-24aea47331de,‪+91 74482 15589‬,contact,contact,1,whatsapp,+917448215589,no_alpha_chars|single_message_contact
+c9e8b8a0-7c1b-4be9-8687-c5f93893cd66,‪+91 78409 66619‬,contact,contact,1,whatsapp,+917840966619,no_alpha_chars|single_message_contact
+e7688c5c-2287-4c8a-8aeb-ebaa8a5f7407,‪+91 95811 31116‬,contact,contact,1,whatsapp,+919581131116,no_alpha_chars|single_message_contact
+de7c6e9d-9a44-4aaf-a99f-1cab6b6654eb,AmEx AllStars!,contact,contact,1,whatsapp,,single_message_contact
+8a0ff880-5ca9-4f4b-9bfd-ecd945d80003,Donnie Hartman,contact,contact,1,whatsapp,,single_message_contact
+be7dcd74-6670-48c5-b172-be4743896cea,Eugenia Calcaño,contact,contact,1,whatsapp,,single_message_contact
+b976d0f4-47dd-47ce-b944-4af261c6661e,Freddy Ordoñez,contact,contact,1,whatsapp,,single_message_contact
+a29e5383-9db4-4edc-ade1-be101d257fe8,Fsma analistas,contact,contact,1,whatsapp,,single_message_contact
+6af94af5-768a-4d91-94aa-2799511fbe7f,Horacio,contact,contact,1,whatsapp,,single_message_contact
+a4d7cba8-f8eb-4941-972c-483aadf4dab4,Jacob Wright,contact,contact,1,whatsapp,,single_message_contact
+79eac68a-7bdd-40a7-8333-8d22a41d8115,Karina,contact,contact,1,whatsapp,,single_message_contact
+0e0134f0-05fe-45c0-bf9c-0d37d441a792,Mike (ARCE),contact,contact,1,whatsapp,,single_message_contact
+17983164-d9f6-4658-9d85-3f7cc5e7e7ea,Parabens,contact,contact,1,whatsapp,,single_message_contact
+cfa76741-c74c-4075-97c2-a1a40941acc0,🐴 Pra mim the same 🍓🚘🍆,contact,contact,1,whatsapp,,single_message_contact
+8e06e197-9448-4ba6-a4d2-acb171124185,Randy Kella,contact,contact,1,whatsapp,,single_message_contact
+113e154f-9fe4-4274-9764-466f86c18fa6,Ricardo Hernandez Arends,contact,contact,1,whatsapp,,single_message_contact
+c62f471e-427f-4314-9e51-6dfeca533eba,Sukumar,contact,contact,1,whatsapp,,single_message_contact
+e55c8e0a-afbb-42e7-8e32-4186125287e5,Vic,contact,contact,1,whatsapp,,short_low_signal|single_message_contact|whatsapp_single_token_name
+79163ada-86d1-4336-ae39-3e6327fa1692,Yan Yang,contact,contact,1,whatsapp,,single_message_contact
+5d2fd5ea-457b-4559-851d-fe69ef9adbfb,‎You,contact,contact,1,whatsapp,,filler_like_token|short_low_signal|single_message_contact|whatsapp_single_token_name
+a623e798-8c11-4ba4-bf8d-4f7fd79cc345,Ale,contact,contact,0,,,short_low_signal
+a451d041-e17b-4578-b863-ca5e33469c46,Ana,contact,contact,0,,,short_low_signal
+1bd491ca-20ee-4e99-a89e-cde9ee41b718,Dri,contact,contact,0,,,short_low_signal
+17542fe3-bc02-47ec-983f-35770c121494,Ivàn,contact,contact,0,,,short_low_signal
+917ce06e-3025-4bd5-b6ce-9c663094e018,Jan,contact,contact,0,,,short_low_signal
+42c0b2fe-b57b-4278-8f43-6711816358bf,Jose,contact,contact,0,,,short_low_signal
+4c2af5fb-4289-4cb8-95bb-a8b37423ea91,Kris🧚‍♂️✨️,contact,contact,0,,,short_low_signal
+02233c63-cc42-460b-ae12-ea7281b90989,Mari,contact,contact,0,,,short_low_signal
+68715984-00ca-4c3e-9dc2-84dc314eb9b3,Ryan,contact,contact,0,,,short_low_signal
+00968191-ec4f-48de-bce9-b00698915aba,Tony,contact,contact,0,,,short_low_signal
+bbba776c-6b3c-47c6-89a6-aa399a70623a,ˣɢʀɪɴɢᴀㅤᵖᵈᵐ,contact,contact,0,,,no_alpha_chars

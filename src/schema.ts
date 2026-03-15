@@ -1587,10 +1587,47 @@ CREATE TRIGGER metadata_enrichment_queue_set_updated_at
 
 export async function ensureExtendedSchema(): Promise<void> {
   const lockKey = 99422631;
-  await pool.query("SELECT pg_advisory_lock($1)", [lockKey]);
-  try {
-    await pool.query(SCHEMA_SQL);
-  } finally {
-    await pool.query("SELECT pg_advisory_unlock($1)", [lockKey]);
+  const maxAttempts = 8;
+  const baseDelayMs = 250;
+
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const isRetryableSchemaError = (error: unknown) => {
+    const code = (error as { code?: string } | null | undefined)?.code;
+    return code === "40P01";
+  };
+
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    let lockAcquired = false;
+    try {
+      const lockResult = await pool.query<{ pg_try_advisory_lock: boolean }>(
+        "SELECT pg_try_advisory_lock($1) AS pg_try_advisory_lock",
+        [lockKey]
+      );
+      lockAcquired = Boolean(lockResult.rows[0]?.pg_try_advisory_lock);
+      if (!lockAcquired) {
+        if (attempt === maxAttempts - 1) {
+          throw new Error("schema bootstrap lock contention");
+        }
+        await sleep(baseDelayMs * Math.pow(1.25, attempt));
+        continue;
+      }
+      await pool.query(SCHEMA_SQL);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (isRetryableSchemaError(error) && attempt < maxAttempts - 1) {
+        await sleep(baseDelayMs * Math.pow(1.8, attempt));
+        continue;
+      }
+      throw error;
+    } finally {
+      if (lockAcquired) {
+        await pool.query("SELECT pg_advisory_unlock($1)", [lockKey]);
+      }
+    }
   }
+
+  throw lastError ?? new Error("ensureExtendedSchema failed");
 }
