@@ -93,6 +93,70 @@ Exit criteria:
 - regenerated cases pass quality gate
 - calibration queue contains only grounded `clear` or `clarify_required` cases
 
+## 5. Phase 2 backlog - conversational investigation workspace
+
+Problem theme:
+- the current graph can show structure, but it does not yet support a real answer-driven discovery journey
+- the next capability is not "more graph nodes"; it is persistent scene-aware investigation grounded in the same evidence bundle that answered the question
+
+Target experience:
+- Ask remains the main entry point for memory questions
+- after a grounded answer is returned, the user can open the answer in graph mode
+- the graph becomes a persistent investigation session rather than a one-shot render
+- follow-up questions operate on the active scene, not on the whole corpus from scratch
+
+Investigation workspace requirements:
+- maintain per-session scene state for:
+  - active entities
+  - active chats, groups, and threads
+  - active evidence bundle
+  - active time window
+  - last answer object
+  - ranked references such as `friend 1`, `friend 2`, `group X`
+- add graph-chat follow-ups scoped to that active scene
+- resolve contextual references such as:
+  - `friend 3`
+  - `that group`
+  - `they`
+  - `what each one said`
+- every follow-up must return three coordinated outputs:
+  - direct answer
+  - scene update
+  - evidence update
+
+Required follow-up behaviors:
+- relationship existence and path
+- group co-membership
+- compare and rank
+- per-entity evidence summaries
+- who-else and what-else exploration
+- timeline branch-out from the current scene
+
+Scene rules:
+- keep the graph scoped to the current investigation scene instead of rebuilding from the whole universe on every turn
+- preserve stable entity ordering so later references such as `friend 1` remain meaningful
+- make the graph explanatory rather than exhaustive: show only the answer path plus the current investigation neighborhood
+
+Guided exploration:
+- add next-step suggestions based on the current scene, such as:
+  - `See if these people know each other`
+  - `Compare what each one said`
+  - `Open the group where this happened`
+  - `Show earlier mentions`
+
+Evidence workspace:
+- expand the bottom evidence reader into a multi-tab investigation surface with:
+  - `Evidence`
+  - `Thread`
+  - `Context`
+  - later `Timeline`
+- make evidence navigation part of the scene workflow instead of only metadata on the side rail
+
+Implementation note:
+- Phase 2 should reuse the Phase 1 answer contract and scene seed
+- do not create a separate graph retrieval engine
+- keep Ask answer quality as the source of truth and treat graph investigation as a scoped continuation of that same grounded retrieval
+
 ## Implemented 2026-03-12
 
 These capability upgrades were completed and removed from the active backlog:

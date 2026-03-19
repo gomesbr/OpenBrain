@@ -207,6 +207,471 @@ export async function getQualityMetrics(days = 30): Promise<Record<string, unkno
   };
 }
 
+async function ensureWhatsAppSystemActor(chatNamespace: string): Promise<string> {
+  const existing = await pool.query<{ actor_id: string }>(
+    `SELECT a.actor_id::text
+       FROM actors a
+       JOIN actor_context ac
+         ON ac.actor_id = a.actor_id
+      WHERE ac.chat_namespace = $1
+        AND ac.actor_type = 'system'
+        AND a.normalized_name = 'whatsapp system'
+      LIMIT 1`,
+    [chatNamespace]
+  );
+  if (existing.rows[0]?.actor_id) return existing.rows[0].actor_id;
+
+  const inserted = await pool.query<{ actor_id: string }>(
+    `INSERT INTO actors (canonical_name, normalized_name, metadata)
+     VALUES ('WhatsApp system', 'whatsapp system', jsonb_build_object('seededBy', 'v2_quality_bootstrap'))
+     ON CONFLICT (normalized_name)
+     DO UPDATE SET canonical_name = EXCLUDED.canonical_name, updated_at = now()
+     RETURNING actor_id::text`,
+    []
+  );
+  const actorId = inserted.rows[0]?.actor_id;
+  if (!actorId) {
+    throw new Error("Failed to ensure WhatsApp system actor");
+  }
+  await pool.query(
+    `INSERT INTO actor_context (
+       actor_id,
+       chat_namespace,
+       actor_type,
+       canonical_name,
+       source,
+       confidence,
+       metadata
+     ) VALUES ($1::uuid, $2, 'system', 'WhatsApp system', 'whatsapp', 1, jsonb_build_object('seededBy', 'v2_quality_bootstrap'))
+     ON CONFLICT (chat_namespace, actor_type, canonical_name)
+     DO UPDATE SET actor_id = EXCLUDED.actor_id, confidence = GREATEST(actor_context.confidence, EXCLUDED.confidence), updated_at = now()`,
+    [actorId, chatNamespace]
+  );
+  return actorId;
+}
+
+export async function repairActorAbstractions(chatNamespace = "personal.main"): Promise<{
+  groupPlaceholderRowsNullified: number;
+  systemRowsRemapped: number;
+  actorContextsRebuilt: number;
+  actorIdentitiesRebuilt: number;
+  actorAliasesRebuilt: number;
+  actorSourceProfilesRebuilt: number;
+  orphanActorsDeleted: number;
+  evidenceLinksSynced: number;
+}> {
+  const whatsappSystemActorId = await ensureWhatsAppSystemActor(chatNamespace);
+
+  const groupPlaceholderRows = await pool.query(
+    `WITH normalized_rows AS (
+       SELECT
+         c.id,
+         lower(
+           regexp_replace(
+             regexp_replace(
+               unaccent(replace(replace(COALESCE(c.metadata->>'speaker', c.metadata->>'sender', c.metadata->>'author', ''), chr(160), ' '), chr(8239), ' ')),
+               '^[~\\s]+',
+               ''
+             ),
+             '[^a-z0-9\\s_-]+',
+             '',
+             'g'
+           )
+         ) AS speaker_norm,
+         lower(
+           regexp_replace(
+             regexp_replace(
+               unaccent(replace(replace(COALESCE(c.metadata->>'conversationLabel', c.source_conversation_id, c.conversation_id, ''), chr(160), ' '), chr(8239), ' ')),
+               '^[~\\s]+',
+               ''
+             ),
+             '[^a-z0-9\\s_-]+',
+             '',
+             'g'
+           )
+         ) AS conversation_norm,
+         c.role,
+         COALESCE(c.metadata->>'system_event', 'false') AS system_event
+       FROM canonical_messages c
+       WHERE c.chat_namespace = $1
+         AND c.source_system = 'whatsapp'
+     ),
+     targets AS (
+       SELECT DISTINCT nr.id
+       FROM normalized_rows nr
+       LEFT JOIN actor_label_overrides alo
+         ON alo.chat_namespace = $1
+        AND alo.normalized_label = nr.speaker_norm
+        AND alo.source_system IN ('', 'whatsapp')
+       WHERE nr.speaker_norm <> ''
+         AND nr.role <> 'system'
+         AND nr.system_event <> 'true'
+         AND (
+           (nr.speaker_norm = nr.conversation_norm AND nr.conversation_norm <> '')
+           OR alo.classification IN ('group_chat', 'ignore')
+         )
+     )
+     UPDATE canonical_messages c
+        SET actor_id = NULL,
+            actor_type = 'unknown',
+            updated_at = now()
+       FROM targets t
+      WHERE c.id = t.id
+        AND (c.actor_id IS NOT NULL OR c.actor_type IS DISTINCT FROM 'unknown')`,
+    [chatNamespace]
+  );
+
+  const systemRows = await pool.query(
+    `WITH system_targets AS (
+       SELECT c.id
+         FROM canonical_messages c
+        WHERE c.chat_namespace = $1
+          AND (
+            c.role = 'system'
+            OR COALESCE(c.metadata->>'system_event', 'false') = 'true'
+            OR EXISTS (
+              SELECT 1
+                FROM actor_label_overrides alo
+               WHERE alo.chat_namespace = $1
+                 AND alo.classification = 'system'
+                 AND alo.source_system IN ('', c.source_system)
+                 AND alo.normalized_label = lower(
+                   regexp_replace(
+                     regexp_replace(
+                       unaccent(replace(replace(COALESCE(c.metadata->>'speaker', c.metadata->>'sender', c.metadata->>'author', ''), chr(160), ' '), chr(8239), ' ')),
+                       '^[~\\s]+',
+                       ''
+                     ),
+                     '[^a-z0-9\\s_-]+',
+                     '',
+                     'g'
+                   )
+                 )
+            )
+          )
+     )
+     UPDATE canonical_messages c
+        SET actor_id = $2::uuid,
+            actor_type = 'system',
+            updated_at = now()
+       FROM system_targets t
+      WHERE c.id = t.id
+        AND (c.actor_id IS DISTINCT FROM $2::uuid OR c.actor_type IS DISTINCT FROM 'system')`,
+    [chatNamespace, whatsappSystemActorId]
+  );
+
+  await pool.query(`DELETE FROM actor_aliases WHERE chat_namespace = $1`, [chatNamespace]);
+  await pool.query(`DELETE FROM actor_source_profile WHERE chat_namespace = $1`, [chatNamespace]);
+  await pool.query(`DELETE FROM actor_context WHERE chat_namespace = $1`, [chatNamespace]);
+  await pool.query(`DELETE FROM actor_identities WHERE chat_namespace = $1`, [chatNamespace]);
+
+  const actorContexts = await pool.query(
+    `WITH actor_rows AS (
+       SELECT
+         c.actor_id,
+         c.chat_namespace,
+         COALESCE(NULLIF(c.actor_type, ''), 'unknown') AS actor_type,
+         c.source_system,
+         c.observed_at,
+         c.quality_score
+       FROM canonical_messages c
+       WHERE c.chat_namespace = $1
+         AND c.actor_id IS NOT NULL
+     ),
+     actor_type_rollup AS (
+       SELECT
+         actor_id,
+         chat_namespace,
+         actor_type,
+         COUNT(*)::int AS message_count,
+         MIN(observed_at) AS first_seen_at,
+         MAX(observed_at) AS last_seen_at,
+         MAX(quality_score) AS max_quality_score,
+         (ARRAY_AGG(source_system ORDER BY source_system))[1] AS source_system
+       FROM actor_rows
+       GROUP BY actor_id, chat_namespace, actor_type
+     ),
+     chosen AS (
+       SELECT DISTINCT ON (actor_id, chat_namespace)
+         actor_id,
+         chat_namespace,
+         actor_type,
+         source_system,
+         message_count,
+         first_seen_at,
+         last_seen_at,
+         max_quality_score
+       FROM actor_type_rollup
+       ORDER BY actor_id, chat_namespace, message_count DESC, max_quality_score DESC, actor_type
+     )
+     INSERT INTO actor_context (
+       actor_id,
+       chat_namespace,
+       actor_type,
+       canonical_name,
+       source,
+       confidence,
+       metadata
+     )
+     SELECT
+       c.actor_id,
+       c.chat_namespace,
+       c.actor_type,
+       a.canonical_name,
+       c.source_system,
+       LEAST(1.0, GREATEST(COALESCE(c.max_quality_score, 0.5), 0.25)),
+       jsonb_build_object(
+         'firstSeenAt', c.first_seen_at,
+         'lastSeenAt', c.last_seen_at,
+         'messageCount', c.message_count
+       )
+     FROM chosen c
+     JOIN actors a
+       ON a.actor_id = c.actor_id`,
+    [chatNamespace]
+  );
+
+  await pool.query(
+    `UPDATE canonical_messages c
+        SET actor_type = ac.actor_type,
+            updated_at = now()
+       FROM actor_context ac
+      WHERE c.chat_namespace = $1
+        AND c.actor_id IS NOT NULL
+        AND ac.chat_namespace = c.chat_namespace
+        AND ac.actor_id = c.actor_id
+        AND c.actor_type IS DISTINCT FROM ac.actor_type`,
+    [chatNamespace]
+  );
+
+  const actorIdentities = await pool.query(
+    `INSERT INTO actor_identities (
+       actor_id,
+       chat_namespace,
+       actor_type,
+       canonical_name,
+       source,
+       confidence,
+       metadata
+     )
+     SELECT
+       ac.actor_id,
+       ac.chat_namespace,
+       ac.actor_type,
+       ac.canonical_name,
+       ac.source,
+       ac.confidence,
+       ac.metadata
+     FROM actor_context ac
+     WHERE ac.chat_namespace = $1`,
+    [chatNamespace]
+  );
+
+  const actorAliases = await pool.query(
+    `WITH raw_aliases AS (
+       SELECT
+         c.actor_id,
+         c.chat_namespace,
+         c.source_system,
+         trim(v.alias) AS alias,
+         COUNT(*)::int AS evidence_count,
+         MIN(c.observed_at) AS first_seen_at,
+         MAX(c.observed_at) AS last_seen_at
+       FROM canonical_messages c
+       CROSS JOIN LATERAL (
+         VALUES
+           (c.metadata->>'speaker'),
+           (c.metadata->>'sender'),
+           (c.metadata->>'author'),
+           (c.metadata->>'actor'),
+           (c.metadata->>'agent'),
+           (c.metadata->>'name')
+       ) v(alias)
+       WHERE c.chat_namespace = $1
+         AND c.actor_id IS NOT NULL
+         AND v.alias IS NOT NULL
+         AND trim(v.alias) <> ''
+       GROUP BY c.actor_id, c.chat_namespace, c.source_system, trim(v.alias)
+     ),
+     filtered AS (
+       SELECT ra.*
+       FROM raw_aliases ra
+       JOIN actors a
+         ON a.actor_id = ra.actor_id
+       LEFT JOIN actor_label_overrides alo
+         ON alo.chat_namespace = ra.chat_namespace
+        AND alo.source_system IN ('', ra.source_system)
+        AND alo.normalized_label = lower(
+          regexp_replace(
+            regexp_replace(
+              unaccent(replace(replace(ra.alias, chr(160), ' '), chr(8239), ' ')),
+              '^[~\\s]+',
+              ''
+            ),
+            '[^a-z0-9\\s_-]+',
+            '',
+            'g'
+          )
+        )
+       WHERE lower(trim(ra.alias)) <> lower(a.canonical_name)
+         AND COALESCE(alo.classification, '') NOT IN ('group_chat', 'ignore')
+         AND NOT (
+           ra.source_system = 'whatsapp'
+           AND lower(
+             regexp_replace(
+               regexp_replace(
+                 unaccent(replace(replace(ra.alias, chr(160), ' '), chr(8239), ' ')),
+                 '^[~\\s]+',
+                 ''
+               ),
+               '[^a-z0-9\\s_-]+',
+               '',
+               'g'
+             )
+           ) = lower(
+             regexp_replace(
+               regexp_replace(
+                 unaccent(replace(replace(COALESCE(
+                   (
+                     SELECT max(cm.metadata->>'conversationLabel')
+                     FROM canonical_messages cm
+                     WHERE cm.chat_namespace = ra.chat_namespace
+                       AND cm.actor_id = ra.actor_id
+                       AND cm.source_system = ra.source_system
+                   ),
+                   ''
+                 ), chr(160), ' '), chr(8239), ' ')),
+                 '^[~\\s]+',
+                 ''
+               ),
+               '[^a-z0-9\\s_-]+',
+               '',
+               'g'
+             )
+           )
+         )
+     )
+     ,
+     chosen AS (
+       SELECT
+         f.*,
+         ROW_NUMBER() OVER (
+           PARTITION BY f.chat_namespace, f.alias
+           ORDER BY f.evidence_count DESC, f.last_seen_at DESC NULLS LAST, f.actor_id
+         ) AS rn
+       FROM filtered f
+     )
+     INSERT INTO actor_aliases (
+       actor_id,
+       chat_namespace,
+       alias,
+       source_system,
+       confidence,
+       first_seen_at,
+       last_seen_at
+     )
+     SELECT
+       actor_id,
+       chat_namespace,
+       alias,
+       source_system,
+       0.8,
+       first_seen_at,
+       last_seen_at
+     FROM chosen
+     WHERE rn = 1
+     ON CONFLICT (chat_namespace, alias)
+     DO UPDATE SET
+       actor_id = EXCLUDED.actor_id,
+       source_system = EXCLUDED.source_system,
+       confidence = GREATEST(actor_aliases.confidence, EXCLUDED.confidence),
+       first_seen_at = COALESCE(LEAST(actor_aliases.first_seen_at, EXCLUDED.first_seen_at), actor_aliases.first_seen_at, EXCLUDED.first_seen_at),
+       last_seen_at = COALESCE(GREATEST(actor_aliases.last_seen_at, EXCLUDED.last_seen_at), actor_aliases.last_seen_at, EXCLUDED.last_seen_at)`,
+    [chatNamespace]
+  );
+
+  const actorSourceProfiles = await pool.query(
+    `INSERT INTO actor_source_profile (
+       actor_id,
+       chat_namespace,
+       source_system,
+       message_count,
+       first_seen_at,
+       last_seen_at,
+       max_quality_score,
+       metadata
+     )
+     SELECT
+       c.actor_id,
+       c.chat_namespace,
+       c.source_system,
+       COUNT(*)::int,
+       MIN(c.observed_at),
+       MAX(c.observed_at),
+       COALESCE(MAX(c.quality_score), 0),
+       jsonb_build_object(
+         'publishedCount', COUNT(*) FILTER (WHERE c.artifact_state = 'published'),
+         'candidateCount', COUNT(*) FILTER (WHERE c.artifact_state = 'candidate')
+       )
+     FROM canonical_messages c
+     WHERE c.chat_namespace = $1
+       AND c.actor_id IS NOT NULL
+     GROUP BY c.actor_id, c.chat_namespace, c.source_system`,
+    [chatNamespace]
+  );
+
+  const orphanActors = await pool.query(
+    `DELETE FROM actors a
+      WHERE NOT EXISTS (
+              SELECT 1
+                FROM canonical_messages c
+               WHERE c.actor_id = a.actor_id
+            )
+        AND NOT EXISTS (
+              SELECT 1
+                FROM actor_context ac
+               WHERE ac.actor_id = a.actor_id
+            )
+        AND NOT EXISTS (
+              SELECT 1
+                FROM answer_evidence_links ael
+               WHERE ael.actor_id = a.actor_id
+            )
+        AND NOT EXISTS (
+              SELECT 1
+                FROM network_saved_views nsv
+               WHERE nsv.owner_actor_id = a.actor_id
+            )
+        AND NOT EXISTS (
+              SELECT 1
+                FROM network_snapshots ns
+               WHERE ns.owner_actor_id = a.actor_id
+            )`
+  );
+
+  const evidenceLinks = await pool.query(
+    `UPDATE answer_evidence_links ael
+        SET actor_id = c.actor_id,
+            source_timestamp = COALESCE(ael.source_timestamp, c.observed_at)
+       FROM canonical_messages c
+      WHERE ael.canonical_message_id = c.id
+        AND c.chat_namespace = $1
+        AND ael.actor_id IS DISTINCT FROM c.actor_id`,
+    [chatNamespace]
+  );
+
+  return {
+    groupPlaceholderRowsNullified: groupPlaceholderRows.rowCount ?? 0,
+    systemRowsRemapped: systemRows.rowCount ?? 0,
+    actorContextsRebuilt: actorContexts.rowCount ?? 0,
+    actorIdentitiesRebuilt: actorIdentities.rowCount ?? 0,
+    actorAliasesRebuilt: actorAliases.rowCount ?? 0,
+    actorSourceProfilesRebuilt: actorSourceProfiles.rowCount ?? 0,
+    orphanActorsDeleted: orphanActors.rowCount ?? 0,
+    evidenceLinksSynced: evidenceLinks.rowCount ?? 0
+  };
+}
+
 export async function runCanonicalBootstrap(limit = 2000): Promise<{ canonicalized: number; published: number; quarantined: number }> {
   const safeLimit = Number.isFinite(Number(limit)) ? Math.max(100, Math.min(10000, Number(limit))) : 2000;
   const ownerName = String(config.ownerName ?? "Owner").trim() || "Owner";
@@ -432,13 +897,25 @@ export async function runCanonicalBootstrap(limit = 2000): Promise<{ canonicaliz
            WHEN c.role = 'system' THEN 'system'
            WHEN c.role = 'user' THEN CASE
              WHEN c.source_system = 'whatsapp'
-               AND lower(NULLIF(trim(COALESCE(c.metadata->>'speaker', c.metadata->>'sender', c.metadata->>'author', '')), '')) <> lower($1)
+               AND lower(
+                     regexp_replace(
+                       replace(replace(COALESCE(c.metadata->>'speaker', c.metadata->>'sender', c.metadata->>'author', ''), chr(160), ' '), chr(8239), ' '),
+                       '^[~\\s]+',
+                       ''
+                     )
+                   ) <> lower(
+                     regexp_replace(
+                       replace(replace($1, chr(160), ' '), chr(8239), ' '),
+                       '^[~\\s]+',
+                       ''
+                     )
+                   )
                THEN 'contact'
              ELSE 'user'
            END
            ELSE 'unknown'
          END AS actor_type,
-         NULLIF(trim(COALESCE(
+         NULLIF(trim(regexp_replace(replace(replace(COALESCE(
            c.metadata->>'speaker',
            c.metadata->>'sender',
            c.metadata->>'author',
@@ -451,7 +928,7 @@ export async function runCanonicalBootstrap(limit = 2000): Promise<{ canonicaliz
              WHEN c.role = 'user' THEN $1
              ELSE 'unknown'
            END
-         )), '') AS actor_name,
+         ), chr(160), ' '), chr(8239), ' '), '^[~\\s]+', '')), '') AS actor_name,
          c.source_system,
          c.quality_score,
          c.observed_at
@@ -524,13 +1001,25 @@ export async function runCanonicalBootstrap(limit = 2000): Promise<{ canonicaliz
            WHEN c.role = 'system' THEN 'system'
            WHEN c.role = 'user' THEN CASE
              WHEN c.source_system = 'whatsapp'
-               AND lower(NULLIF(trim(COALESCE(c.metadata->>'speaker', c.metadata->>'sender', c.metadata->>'author', '')), '')) <> lower($1)
+               AND lower(
+                     regexp_replace(
+                       replace(replace(COALESCE(c.metadata->>'speaker', c.metadata->>'sender', c.metadata->>'author', ''), chr(160), ' '), chr(8239), ' '),
+                       '^[~\\s]+',
+                       ''
+                     )
+                   ) <> lower(
+                     regexp_replace(
+                       replace(replace($1, chr(160), ' '), chr(8239), ' '),
+                       '^[~\\s]+',
+                       ''
+                     )
+                   )
                THEN 'contact'
              ELSE 'user'
            END
            ELSE 'unknown'
          END AS actor_type,
-         NULLIF(trim(COALESCE(
+         NULLIF(trim(regexp_replace(replace(replace(COALESCE(
            c.metadata->>'speaker',
            c.metadata->>'sender',
            c.metadata->>'author',
@@ -543,7 +1032,7 @@ export async function runCanonicalBootstrap(limit = 2000): Promise<{ canonicaliz
              WHEN c.role = 'user' THEN $1
              ELSE 'unknown'
            END
-         )), '') AS actor_name,
+         ), chr(160), ' '), chr(8239), ' '), '^[~\\s]+', '')), '') AS actor_name,
          c.source_system,
          c.quality_score,
          c.observed_at
@@ -607,13 +1096,25 @@ export async function runCanonicalBootstrap(limit = 2000): Promise<{ canonicaliz
            WHEN c.role = 'system' THEN 'system'
            WHEN c.role = 'user' THEN CASE
              WHEN c.source_system = 'whatsapp'
-               AND lower(NULLIF(trim(COALESCE(c.metadata->>'speaker', c.metadata->>'sender', c.metadata->>'author', '')), '')) <> lower($1)
+               AND lower(
+                     regexp_replace(
+                       replace(replace(COALESCE(c.metadata->>'speaker', c.metadata->>'sender', c.metadata->>'author', ''), chr(160), ' '), chr(8239), ' '),
+                       '^[~\\s]+',
+                       ''
+                     )
+                   ) <> lower(
+                     regexp_replace(
+                       replace(replace($1, chr(160), ' '), chr(8239), ' '),
+                       '^[~\\s]+',
+                       ''
+                     )
+                   )
                THEN 'contact'
              ELSE 'user'
            END
            ELSE 'unknown'
          END AS actor_type,
-         NULLIF(trim(COALESCE(
+         NULLIF(trim(regexp_replace(replace(replace(COALESCE(
            c.metadata->>'speaker',
            c.metadata->>'sender',
            c.metadata->>'author',
@@ -626,7 +1127,7 @@ export async function runCanonicalBootstrap(limit = 2000): Promise<{ canonicaliz
              WHEN c.role = 'user' THEN $1
              ELSE 'unknown'
            END
-         )), '') AS actor_name
+         ), chr(160), ' '), chr(8239), ' '), '^[~\\s]+', '')), '') AS actor_name
        FROM canonical_messages c
      ),
       matched AS (
@@ -649,6 +1150,17 @@ export async function runCanonicalBootstrap(limit = 2000): Promise<{ canonicaliz
       WHERE c.id = m.id
         AND (c.actor_id IS DISTINCT FROM m.actor_id OR c.actor_type IS DISTINCT FROM m.actor_type)`,
     [ownerName]
+  );
+
+  await pool.query(
+    `UPDATE canonical_messages c
+        SET actor_type = ac.actor_type,
+            updated_at = now()
+       FROM actor_context ac
+      WHERE c.actor_id IS NOT NULL
+        AND ac.chat_namespace = c.chat_namespace
+        AND ac.actor_id = c.actor_id
+        AND c.actor_type IS DISTINCT FROM ac.actor_type`
   );
 
   await pool.query(
@@ -746,6 +1258,16 @@ export async function runCanonicalBootstrap(limit = 2000): Promise<{ canonicaliz
        metadata = EXCLUDED.metadata,
        updated_at = now()`
   );
+
+  const namespaces = await pool.query<{ chat_namespace: string }>(
+    `SELECT DISTINCT chat_namespace
+       FROM canonical_messages`
+  );
+  for (const row of namespaces.rows) {
+    const chatNamespace = String(row.chat_namespace ?? "").trim();
+    if (!chatNamespace) continue;
+    await repairActorAbstractions(chatNamespace);
+  }
 
   const promoteResult = await pool.query<{ id: string; quality_score: number }>(
     `UPDATE canonical_messages

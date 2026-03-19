@@ -289,6 +289,45 @@ async function findSystemActorId(client: PoolClient, chatNamespace: string): Pro
   return String(result.rows[0].actor_id);
 }
 
+async function upsertActorLabelOverride(
+  client: PoolClient,
+  params: {
+    chatNamespace: string;
+    actorName: string;
+    classification: "group_chat" | "system" | "tool" | "ignore" | "person" | "unknown";
+    sourceSystem?: string;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<number> {
+  const normalizedLabel = normalizeActorName(params.actorName);
+  if (!normalizedLabel) return 0;
+  const result = await client.query(
+    `INSERT INTO actor_label_overrides (
+       chat_namespace,
+       normalized_label,
+       display_label,
+       classification,
+       source_system,
+       metadata
+     ) VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+     ON CONFLICT (chat_namespace, normalized_label, source_system)
+     DO UPDATE SET
+       display_label = EXCLUDED.display_label,
+       classification = EXCLUDED.classification,
+       metadata = COALESCE(actor_label_overrides.metadata, '{}'::jsonb) || EXCLUDED.metadata,
+       updated_at = now()`,
+    [
+      params.chatNamespace,
+      normalizedLabel,
+      cleanDisplayName(params.actorName) || params.actorName,
+      params.classification,
+      params.sourceSystem ?? "",
+      JSON.stringify(params.metadata ?? {})
+    ]
+  );
+  return result.rowCount ?? 0;
+}
+
 async function main(): Promise<void> {
   await ensureExtendedSchema();
 
@@ -314,26 +353,42 @@ async function main(): Promise<void> {
   const client = await pool.connect();
   let updated = 0;
   const counts = { m: 0, f: 0, i: 0, w: 0, blank: 0 };
-  let whatsappMerged = 0;
-  let whatsappCanonicalMoved = 0;
-  let whatsappSourceProfilesMoved = 0;
-  let whatsappAliasesMoved = 0;
-  let whatsappEvidenceMoved = 0;
+  let labelOverridesUpserted = 0;
+  let whatsappSystemActorId = "";
   let explicitMerges = 0;
   let explicitMergeCanonicalMoved = 0;
 
   try {
     await client.query("BEGIN");
-    const whatsappSystemActorId = await findSystemActorId(client, chatNamespace);
+    whatsappSystemActorId = await findSystemActorId(client, chatNamespace);
 
     for (const row of merged.values()) {
       if (row.review === "w") {
-        const result = await mergeActor(client, chatNamespace, whatsappSystemActorId, row.actorId);
-        whatsappMerged += result.loserDeleted;
-        whatsappCanonicalMoved += result.canonicalMoved;
-        whatsappSourceProfilesMoved += result.sourceProfilesMoved;
-        whatsappAliasesMoved += result.aliasesMoved;
-        whatsappEvidenceMoved += result.evidenceMoved;
+        labelOverridesUpserted += await upsertActorLabelOverride(client, {
+          chatNamespace,
+          actorName: row.actorName,
+          classification: "group_chat",
+          sourceSystem: "whatsapp",
+          metadata: {
+            source: "owner_review",
+            reviewFile: row.sourceFile,
+            actorId: row.actorId
+          }
+        });
+        await client.query(
+          `UPDATE actors
+              SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+                'reviewClassification',
+                jsonb_build_object(
+                  'kind', 'group_chat',
+                  'source', 'owner_review',
+                  'reviewedAt', to_jsonb(now())
+                )
+              ),
+                  updated_at = now()
+            WHERE actor_id = $1::uuid`,
+          [row.actorId]
+        );
         counts.w += 1;
         continue;
       }
@@ -446,11 +501,8 @@ async function main(): Promise<void> {
     actorCount: merged.size,
     counts,
     chatNamespace,
-    whatsappMerged,
-    whatsappCanonicalMoved,
-    whatsappSourceProfilesMoved,
-    whatsappAliasesMoved,
-    whatsappEvidenceMoved,
+    labelOverridesUpserted,
+    whatsappSystemActorId,
     explicitMerges,
     explicitMergeCanonicalMoved,
     sources: [lowPath, theyPath]

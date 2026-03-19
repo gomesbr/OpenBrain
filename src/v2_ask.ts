@@ -6,6 +6,10 @@ import { getOpenBrainCapabilities } from "./v2_capabilities.js";
 import { dispatchAgentEnvelope } from "./v2_mesh.js";
 import { fetchContextWindow, fetchThreadSlice, searchAnchors } from "./v2_search.js";
 import type {
+  AnswerSceneEntityRef,
+  AnswerSceneSeed,
+  AnswerSceneShape,
+  AskGraphSuggestion,
   ComposerMode,
   ContextMode,
   PlannerMode,
@@ -203,6 +207,313 @@ function extractNameCandidates(evidence: V2EvidenceRef[]): string[] {
     }
   }
   return Array.from(names);
+}
+
+type TemporalAnswerOperator = "latest" | "earliest";
+
+export function detectTemporalAnswerOperator(question: string): TemporalAnswerOperator | null {
+  const q = normalizeText(question);
+  if (!q) return null;
+  if (/\b(last|latest|most recent|newest)\b/.test(q)) return "latest";
+  if (/\b(first|earliest|oldest|initial)\b/.test(q)) return "earliest";
+  return null;
+}
+
+function normalizeSpace(value: string | null | undefined): string {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function formatAnswerDate(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return null;
+  return dt.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC"
+  });
+}
+
+function looksLikeGenericMatchCount(text: string | null | undefined): boolean {
+  const normalized = normalizeText(text ?? "");
+  if (!normalized) return false;
+  return /i found \d+ (relevant )?matches/.test(normalized)
+    || /one strong match/.test(normalized)
+    || /candidate matches from evidence/.test(normalized);
+}
+
+function extractQuestionNameCandidates(question: string): string[] {
+  const names = new Set<string>();
+  const pattern = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b/g;
+  const stop = new Set(["What", "When", "Where", "Who", "Why", "How", "Batman", "Costco"]);
+  const matches = String(question ?? "").match(pattern) ?? [];
+  for (const match of matches) {
+    const trimmed = normalizeSpace(match);
+    if (!trimmed || stop.has(trimmed)) continue;
+    names.add(trimmed);
+    if (names.size >= 8) break;
+  }
+  return Array.from(names);
+}
+
+function inferQuestionSpeakerPreference(question: string, actorNames: string[]): "user" | "other" | null {
+  const q = normalizeText(question);
+  if (!q) return null;
+  if (
+    /\b(i|me|my)\b/.test(q) &&
+    /\b(tell|told|say|said|mention|mentioned|write|wrote|text|texted|send|sent|ask|asked)\b/.test(q)
+  ) {
+    return "user";
+  }
+  if (actorNames.length > 0 && /\b(say|said|tell|told|mention|mentioned|wrote|texted|sent|asked)\b/.test(q)) {
+    return "other";
+  }
+  return null;
+}
+
+function pickTopicCue(question: string, plan: QueryPlan, profile: QuestionProfile, actorLabels: string[]): string | null {
+  const exclude = new Set([
+    "last", "latest", "most", "recent", "first", "earliest", "oldest", "what", "who", "when", "where",
+    "thing", "told", "said", "mention", "mentioned", "about", "from", "with", "did", "tell", "love", "loves"
+  ]);
+  for (const label of actorLabels) {
+    const normalized = normalizeText(label);
+    if (!normalized) continue;
+    for (const token of normalized.split(/\s+/)) exclude.add(token);
+  }
+  const candidates = [
+    ...profile.focusTerms,
+    ...plan.mustHaveSignals,
+    ...extractQuestionNameCandidates(question)
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeText(candidate);
+    if (!normalized) continue;
+    if (exclude.has(normalized)) continue;
+    if (normalized.length < 4) continue;
+    return candidate;
+  }
+  return null;
+}
+
+function selectPrimaryEvidenceForQuestion(question: string, evidence: V2EvidenceRef[], actorNames: string[]): V2EvidenceRef | null {
+  if (evidence.length === 0) return null;
+  const operator = detectTemporalAnswerOperator(question);
+  const speakerPreference = inferQuestionSpeakerPreference(question, actorNames);
+  const normalizedActors = actorNames.map((item) => normalizeText(item)).filter(Boolean);
+  const candidates = evidence
+    .filter((item) => {
+      if (speakerPreference === "user") {
+        return String(item.actorType ?? "").toLowerCase() === "user" || String(item.role ?? "").toLowerCase() === "user";
+      }
+      if (speakerPreference === "other" && normalizedActors.length > 0) {
+        const label = normalizeText(item.entityLabel ?? "");
+        return normalizedActors.some((name) => label.includes(name));
+      }
+      return true;
+    });
+  const source = candidates.length > 0 ? candidates : evidence;
+  const sorted = [...source].sort((left, right) => {
+    const leftTs = left.sourceTimestamp ? new Date(left.sourceTimestamp).getTime() : Number.NaN;
+    const rightTs = right.sourceTimestamp ? new Date(right.sourceTimestamp).getTime() : Number.NaN;
+    const leftDirect = left.contextRole === "direct" ? 1 : 0;
+    const rightDirect = right.contextRole === "direct" ? 1 : 0;
+    if (operator === "latest") {
+      if (Number.isFinite(leftTs) && Number.isFinite(rightTs) && leftTs !== rightTs) return rightTs - leftTs;
+    } else if (operator === "earliest") {
+      if (Number.isFinite(leftTs) && Number.isFinite(rightTs) && leftTs !== rightTs) return leftTs - rightTs;
+    }
+    return rightDirect - leftDirect || right.similarity - left.similarity;
+  });
+  return sorted[0] ?? null;
+}
+
+function buildNaturalDirectAnswer(params: {
+  question: string;
+  plan: QueryPlan;
+  profile: QuestionProfile;
+  evidence: V2EvidenceRef[];
+  primary: V2EvidenceRef | null;
+}): string | null {
+  const { question, plan, profile, evidence, primary } = params;
+  if (!primary) return null;
+  const operator = detectTemporalAnswerOperator(question);
+  const actorNames = plan.retrievalFacets.actorNames ?? [];
+  const targetLabel = actorNames.find((item) => normalizeText(item) !== "you" && normalizeText(item) !== "fabio") ?? null;
+  const topicCue = pickTopicCue(question, plan, profile, actorNames);
+  const dateLabel = formatAnswerDate(primary.sourceTimestamp);
+  const conversationLabel = normalizeSpace(primary.sourceConversationLabel ?? "");
+  const excerpt = compactSnippet(primary.excerpt, 160);
+
+  if (operator) {
+    const operatorText = operator === "latest" ? "last" : "first";
+    if (inferQuestionSpeakerPreference(question, actorNames) === "user") {
+      return `Your ${operatorText}${topicCue ? ` mention about ${topicCue}` : " grounded mention"}${targetLabel ? ` to ${targetLabel}` : ""} was${dateLabel ? ` on ${dateLabel}` : ""}${conversationLabel ? ` in "${conversationLabel}"` : ""}. You said: "${excerpt}"`;
+    }
+    const speaker = normalizeSpace(primary.entityLabel ?? "") || targetLabel || "That person";
+    return `${speaker}'s ${operatorText}${topicCue ? ` mention about ${topicCue}` : " grounded mention"} was${dateLabel ? ` on ${dateLabel}` : ""}${conversationLabel ? ` in "${conversationLabel}"` : ""}. The message was: "${excerpt}"`;
+  }
+
+  if (profile.kind === "boolean") {
+    return `The strongest grounded evidence${dateLabel ? ` is from ${dateLabel}` : ""}${conversationLabel ? ` in "${conversationLabel}"` : ""}: "${excerpt}"`;
+  }
+  return `The strongest grounded evidence${dateLabel ? ` is from ${dateLabel}` : ""}${conversationLabel ? ` in "${conversationLabel}"` : ""}. The message was: "${excerpt}"`;
+}
+
+async function resolveOwnerSceneActor(chatNamespace: string): Promise<{ actorId: string; label: string } | null> {
+  const result = await pool.query<{ actor_id: string; canonical_name: string }>(
+    `SELECT a.actor_id::text, a.canonical_name
+       FROM actors a
+       JOIN actor_context ac ON ac.actor_id = a.actor_id
+      WHERE ac.chat_namespace = $1
+        AND ac.actor_type = 'user'
+      ORDER BY ac.confidence DESC, ac.updated_at DESC
+      LIMIT 1`,
+    [chatNamespace]
+  );
+  if (!result.rows[0]) return null;
+  return { actorId: result.rows[0].actor_id, label: result.rows[0].canonical_name };
+}
+
+async function resolveSceneActors(chatNamespace: string, names: string[]): Promise<Array<{ actorId: string; label: string }>> {
+  const resolved: Array<{ actorId: string; label: string }> = [];
+  const seen = new Set<string>();
+  for (const rawName of names.slice(0, 8)) {
+    const name = normalizeSpace(rawName);
+    if (!name) continue;
+    const result = await pool.query<{ actor_id: string; canonical_name: string }>(
+      `WITH matches AS (
+         SELECT a.actor_id::text, a.canonical_name, ac.confidence, 3 AS rank
+           FROM actors a
+           JOIN actor_context ac ON ac.actor_id = a.actor_id
+          WHERE ac.chat_namespace = $1
+            AND lower(ac.canonical_name) = lower($2)
+         UNION ALL
+         SELECT a.actor_id::text, a.canonical_name, aa.confidence, 2 AS rank
+           FROM actor_aliases aa
+           JOIN actors a ON a.actor_id = aa.actor_id
+          WHERE aa.chat_namespace = $1
+            AND lower(aa.alias) = lower($2)
+         UNION ALL
+         SELECT a.actor_id::text, a.canonical_name, ac.confidence, 1 AS rank
+           FROM actors a
+           JOIN actor_context ac ON ac.actor_id = a.actor_id
+          WHERE ac.chat_namespace = $1
+            AND lower(ac.canonical_name) LIKE lower($3)
+       )
+       SELECT actor_id, canonical_name
+         FROM matches
+        ORDER BY rank DESC, confidence DESC NULLS LAST, canonical_name ASC
+        LIMIT 1`,
+      [chatNamespace, name, `%${name}%`]
+    );
+    const row = result.rows[0];
+    if (!row || seen.has(row.actor_id)) continue;
+    seen.add(row.actor_id);
+    resolved.push({ actorId: row.actor_id, label: row.canonical_name });
+  }
+  return resolved;
+}
+
+function inferAnswerSceneShape(question: string, profile: QuestionProfile): AnswerSceneShape | null {
+  const operator = detectTemporalAnswerOperator(question);
+  if (operator === "latest") return "latest_mention";
+  if (operator === "earliest") return "earliest_mention";
+  if (profile.kind === "entity_list") return "relationship_list";
+  if (/\bwho said\b|\bwhat did\b|\btold\b|\bsaid to\b/.test(normalizeText(question))) return "actor_statement";
+  if (profile.kind === "open" || profile.kind === "boolean") return "generic_answer";
+  return null;
+}
+
+async function buildAnswerSceneSeed(params: {
+  chatNamespace: string;
+  question: string;
+  plan: QueryPlan;
+  profile: QuestionProfile;
+  answerText: string;
+  evidence: V2EvidenceRef[];
+}): Promise<AnswerSceneSeed | null> {
+  if (params.evidence.length === 0) return null;
+  const sceneShape = inferAnswerSceneShape(params.question, params.profile);
+  if (!sceneShape) return null;
+  const primary = selectPrimaryEvidenceForQuestion(params.question, params.evidence, params.plan.retrievalFacets.actorNames ?? []);
+  const primaryEvidence = primary
+    ? [primary, ...params.evidence.filter((item) => item.memoryId !== primary.memoryId).slice(0, 5)]
+    : params.evidence.slice(0, 6);
+
+  const owner = await resolveOwnerSceneActor(params.chatNamespace);
+  const actorNames = Array.from(
+    new Set([
+      ...(params.plan.retrievalFacets.actorNames ?? []),
+      ...extractQuestionNameCandidates(params.question),
+      ...extractNameCandidates(primaryEvidence)
+    ])
+  ).slice(0, 8);
+  const resolvedActors = await resolveSceneActors(params.chatNamespace, actorNames);
+  const actorMap = new Map<string, { actorId: string; label: string; role?: string | null }>();
+  if (owner) actorMap.set(owner.actorId, { actorId: owner.actorId, label: owner.label, role: "user" });
+  for (const actor of resolvedActors) {
+    actorMap.set(actor.actorId, { actorId: actor.actorId, label: actor.label, role: actor.actorId === owner?.actorId ? "user" : "other" });
+  }
+  for (const item of primaryEvidence) {
+    if (item.actorId && !actorMap.has(item.actorId)) {
+      actorMap.set(item.actorId, {
+        actorId: item.actorId,
+        label: normalizeSpace(item.entityLabel ?? "") || "Unknown actor",
+        role: String(item.actorType ?? "").toLowerCase() === "user" ? "user" : "other"
+      });
+    }
+  }
+
+  const conversationIds = Array.from(new Set(primaryEvidence.map((item) => String(item.sourceConversationId ?? "").trim()).filter(Boolean))).slice(0, 4);
+  const conversationLabels = Array.from(new Set(primaryEvidence.map((item) => normalizeSpace(item.sourceConversationLabel ?? "")).filter(Boolean))).slice(0, 4);
+  const threadMessageIds = Array.from(
+    new Set(primaryEvidence.map((item) => normalizeSpace(item.sourceMessageId ?? item.canonicalId ?? "")).filter(Boolean))
+  ).slice(0, 6);
+  const topicCue = pickTopicCue(params.question, params.plan, params.profile, Array.from(actorMap.values()).map((item) => item.label));
+
+  const orderedEntities: AnswerSceneEntityRef[] = Array.from(actorMap.values())
+    .filter((item) => item.actorId !== owner?.actorId)
+    .slice(0, 8)
+    .map((item, index) => ({
+      rank: index + 1,
+      label: item.label,
+      actorId: item.actorId,
+      role: item.role ?? null
+    }));
+
+  return {
+    sceneMode: "answer_scene",
+    sceneShape,
+    question: params.question,
+    answerText: params.answerText,
+    answerSummary: params.answerText,
+    primaryEvidence,
+    actorIds: Array.from(actorMap.keys()),
+    actorLabels: Array.from(actorMap.values()).map((item) => item.label),
+    conversationIds,
+    conversationLabels,
+    threadMessageIds,
+    topicCues: topicCue ? [topicCue] : [],
+    timeAnchor: primary?.sourceTimestamp ?? null,
+    orderedEntities,
+    sceneTitle: params.answerText
+  };
+}
+
+function buildGraphSuggestion(sceneSeed: AnswerSceneSeed | null): AskGraphSuggestion | null {
+  if (!sceneSeed) return null;
+  if (sceneSeed.sceneShape === "relationship_list") {
+    return {
+      ctaLabel: "Show graph",
+      prompt: "See these connections in graph mode."
+    };
+  }
+  return {
+    ctaLabel: "Show graph",
+    prompt: "See this answer in graph mode."
+  };
 }
 
 function parseJsonObjectLike(input: string): Record<string, unknown> | null {
@@ -577,6 +888,7 @@ async function synthesizeAnswerContractWithModel(params: {
               "If scope is ambiguous, return decision=clarify_first with one short specific clarification question and finalAnswer=null. " +
               "For numeric questions, distinguish meaningful metric values from incidental numbers and avoid double counting. " +
               "Prefer recent explicit evidence over weak or ambiguous matches, and cite actor/timestamp context in your narrative. " +
+              "For singular questions that ask for the latest, last, earliest, or first grounded result, answer with one best grounded result first and never reply with generic match-count phrasing. " +
               "Return JSON only with keys: decision(answer_now|clarify_first|insufficient), intentSummary, requiresClarification(boolean), clarificationQuestion, assumptionsUsed(array), constraintChecks(array of {name,passed,note}), finalAnswer(object|null), status(definitive|estimated|partial|insufficient|clarification_needed). " +
               "When finalAnswer is present use fields: direct, estimate, confidence(low|medium|high), contradictionCallout, definitiveNextData."
           },
@@ -977,6 +1289,8 @@ function buildConstraintChecks(params: {
 }
 
 function buildFinalAnswer(params: {
+  question: string;
+  plan: QueryPlan;
   profile: QuestionProfile;
   sufficient: boolean;
   contradiction: boolean;
@@ -984,6 +1298,13 @@ function buildFinalAnswer(params: {
   estimate: { direct: string | null; estimate: string | null; numbers: number[] };
   evidence: V2EvidenceRef[];
 }): V2FinalAnswer {
+  const naturalDirect = buildNaturalDirectAnswer({
+    question: params.question,
+    plan: params.plan,
+    profile: params.profile,
+    evidence: params.evidence,
+    primary: selectPrimaryEvidenceForQuestion(params.question, params.evidence, params.plan.retrievalFacets.actorNames ?? [])
+  });
   if (params.profile.kind === "numeric") {
     return {
       direct: params.estimate.direct,
@@ -1009,7 +1330,7 @@ function buildFinalAnswer(params: {
     ? `Top supporting evidence: ${top.map((line, idx) => `${idx + 1}) ${line}`).join(" | ")}`
     : null;
   return {
-    direct,
+    direct: naturalDirect ?? direct,
     estimate,
     confidence: params.confidence,
     contradictionCallout: null,
@@ -1057,7 +1378,7 @@ function buildAnswerContract(params: {
         : (sufficient ? "estimated" : "partial");
 
   const finalAnswer = decision === "answer_now"
-    ? buildFinalAnswer({ profile, sufficient, contradiction, confidence, estimate, evidence })
+    ? buildFinalAnswer({ question: params.question, plan: params.plan, profile, sufficient, contradiction, confidence, estimate, evidence })
     : null;
 
   return {
@@ -1257,6 +1578,7 @@ async function searchPublishedEvidence(
     actorId: context.actorId,
     actorType: context.actorType,
     sourceConversationId: context.conversationId,
+    sourceConversationLabel: context.sourceConversationLabel,
     sourceTimestamp: context.sourceTimestamp,
     entityLabel: context.actorName,
     excerpt: context.excerpt,
@@ -1277,6 +1599,7 @@ async function searchPublishedEvidence(
       actorId: anchor.actorId,
       actorType: anchor.actorType,
       sourceConversationId: anchor.conversationId,
+      sourceConversationLabel: anchor.sourceConversationLabel,
       sourceTimestamp: anchor.sourceTimestamp,
       entityLabel: anchor.actorName,
       excerpt: anchor.excerpt,
@@ -1673,6 +1996,45 @@ export async function askV2(input: V2AskRequest, principal: V2Principal): Promis
   }, "controller_agent", synthesized ? "ok" : "retry");
   if (synthesized) answerContract = synthesized;
 
+  const naturalDirect = buildNaturalDirectAnswer({
+    question,
+    plan: planner,
+    profile: questionProfile,
+    evidence: synthesisEvidence,
+    primary: selectPrimaryEvidenceForQuestion(question, synthesisEvidence, planner.retrievalFacets.actorNames ?? [])
+  });
+  if (
+    answerContract.decision === "answer_now" &&
+    answerContract.finalAnswer &&
+    naturalDirect &&
+    (
+      detectTemporalAnswerOperator(question) != null ||
+      looksLikeGenericMatchCount(answerContract.finalAnswer.direct) ||
+      !normalizeSpace(answerContract.finalAnswer.direct ?? "")
+    )
+  ) {
+    answerContract = {
+      ...answerContract,
+      finalAnswer: {
+        ...answerContract.finalAnswer,
+        direct: naturalDirect
+      }
+    };
+  }
+
+  const sceneSeed = answerContract.decision === "answer_now" && sufficient
+    ? await buildAnswerSceneSeed({
+        chatNamespace,
+        question,
+        plan: planner,
+        profile: questionProfile,
+        answerText: String(answerContract.finalAnswer?.direct ?? answerContract.finalAnswer?.estimate ?? ""),
+        evidence: synthesisEvidence
+      })
+    : null;
+  const graphable = Boolean(sceneSeed && answerContract.decision === "answer_now" && sufficient && !contradiction && answerContract.status !== "partial" && answerContract.status !== "insufficient");
+  const graphSuggestion = graphable ? buildGraphSuggestion(sceneSeed) : null;
+
   const criticReq = buildEnvelope({
     traceId,
     conversationId,
@@ -1758,6 +2120,12 @@ export async function askV2(input: V2AskRequest, principal: V2Principal): Promis
         consistency,
         contradiction,
         numericValues,
+        journeyLatestEarliest: detectTemporalAnswerOperator(question),
+        journeySpeakerTarget: Boolean(planner.retrievalFacets.actorNames?.length),
+        journeyConversationAttribution: Boolean(sceneSeed?.conversationIds?.length),
+        journeyGraphable: graphable,
+        journeySceneShape: sceneSeed?.sceneShape ?? null,
+        journeySceneFaithful: Boolean(sceneSeed?.primaryEvidence?.length && sceneSeed?.actorIds?.length),
         retrievalFacetsUsed: answerContract.retrievalFacetsUsed ?? planner.retrievalFacets,
         reasoningMode: answerContract.reasoningMode ?? planner.reasoningMode,
         bootstrap
@@ -1821,9 +2189,18 @@ export async function askV2(input: V2AskRequest, principal: V2Principal): Promis
       contradiction,
       bootstrap,
       confidenceScore,
-      principalKind: principal.kind
+      principalKind: principal.kind,
+      journeyLatestEarliest: detectTemporalAnswerOperator(question),
+      journeySpeakerTarget: Boolean(planner.retrievalFacets.actorNames?.length),
+      journeyConversationAttribution: Boolean(sceneSeed?.conversationIds?.length),
+      journeyGraphable: graphable,
+      journeySceneShape: sceneSeed?.sceneShape ?? null,
+      journeySceneFaithful: Boolean(sceneSeed?.primaryEvidence?.length && sceneSeed?.actorIds?.length)
     },
     evidence: finalEvidence,
+    graphable,
+    graphSuggestion,
+    sceneSeed,
     debugTrace: input.debugMode
       ? {
           runId: answerRunId,

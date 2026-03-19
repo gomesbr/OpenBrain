@@ -47,6 +47,226 @@ export interface RetrievalFacets {
   topicCues: string[];
 }
 
+export type NetworkNodeType =
+  | "owner"
+  | "actor"
+  | "family_group"
+  | "friend_group"
+  | "group_chat"
+  | "thread"
+  | "topic"
+  | "project"
+  | "location"
+  | "event"
+  | "time_bucket"
+  | "agents_tools"
+  | "overflow";
+
+export type NetworkEdgeType =
+  | "talked_to"
+  | "mentioned"
+  | "mentioned_by"
+  | "in_group_with"
+  | "participated_in"
+  | "shared_thread"
+  | "shared_friend"
+  | "discussed_topic"
+  | "related_to_project"
+  | "happened_at"
+  | "active_in_time"
+  | "uses_tool"
+  | "belongs_to_category"
+  | "overflow";
+
+export type NetworkProvenanceMode = "direct" | "derived";
+export type NetworkLayoutMode = "radial" | "force" | "hierarchical";
+export type NetworkTickMode = "day" | "week" | "month";
+export type NetworkConfidenceMode = "strong_only" | "include_weak";
+export type NetworkSceneMode = "default" | "answer_scene";
+export type AnswerSceneShape =
+  | "latest_mention"
+  | "earliest_mention"
+  | "actor_statement"
+  | "relationship_list"
+  | "generic_answer";
+
+export interface NetworkGraphCommand {
+  action:
+    | "none"
+    | "expand"
+    | "collapse"
+    | "collapse_all"
+    | "focus"
+    | "hide_weak"
+    | "show_weak";
+  target: string | null;
+  raw: string;
+}
+
+export interface NetworkGraphFilterState {
+  nodeTypes?: NetworkNodeType[];
+  edgeTypes?: NetworkEdgeType[];
+  relationshipClasses?: Array<"family_confirmed" | "family_likely" | "friend" | "contact" | "unknown">;
+  sourceSystems?: string[];
+  focusMode?: boolean;
+}
+
+export interface AnswerSceneEntityRef {
+  rank: number;
+  label: string;
+  actorId?: string | null;
+  role?: string | null;
+}
+
+export interface AnswerSceneSeed {
+  sceneMode: "answer_scene";
+  sceneShape: AnswerSceneShape;
+  question: string;
+  answerText: string;
+  answerSummary?: string;
+  primaryEvidence: V2EvidenceRef[];
+  actorIds: string[];
+  actorLabels: string[];
+  conversationIds: string[];
+  conversationLabels: string[];
+  threadMessageIds: string[];
+  topicCues: string[];
+  timeAnchor: string | null;
+  orderedEntities: AnswerSceneEntityRef[];
+  sceneTitle?: string | null;
+}
+
+export interface NetworkGraphRequest {
+  chatNamespace?: string;
+  limit?: number;
+  query?: string;
+  command?: string;
+  sceneMode?: NetworkSceneMode;
+  sceneSeed?: AnswerSceneSeed;
+  selectedNodeId?: string;
+  selectedEdgeId?: string;
+  expandedNodeIds?: string[];
+  collapsedNodeIds?: string[];
+  overflowState?: Record<string, number>;
+  filters?: NetworkGraphFilterState;
+  confidenceMode?: NetworkConfidenceMode;
+  startDate?: string;
+  endDate?: string;
+  autoplayTickMode?: NetworkTickMode;
+  layoutMode?: NetworkLayoutMode;
+  savedViewId?: string;
+  snapshotId?: string;
+}
+
+export interface NetworkEvidenceSummary {
+  kind: string;
+  excerpt: string;
+  sourceSystem?: string | null;
+  sourceTimestamp?: string | null;
+  actorName?: string | null;
+  conversationLabel?: string | null;
+}
+
+export interface NetworkGraphNode {
+  id: string;
+  entityKey: string;
+  nodeType: NetworkNodeType;
+  label: string;
+  displayLabel: string;
+  fullLabel: string | null;
+  confidence: number;
+  certainty: number;
+  strength: number;
+  provenanceMode: NetworkProvenanceMode;
+  evidenceSummary: NetworkEvidenceSummary[];
+  isShell?: boolean;
+  actorId?: string | null;
+  sourceSystem?: string | null;
+  relationshipClass?: "family_confirmed" | "family_likely" | "friend" | "contact" | "unknown" | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface NetworkGraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  edgeType: NetworkEdgeType;
+  label: string;
+  confidence: number;
+  certainty: number;
+  strength: number;
+  provenanceMode: NetworkProvenanceMode;
+  evidenceSummary: NetworkEvidenceSummary[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface NetworkDetailPanelSection {
+  title: string;
+  body: string;
+  bullets?: string[];
+}
+
+export interface NetworkDetailPanel {
+  title: string;
+  subtitle: string;
+  sections: NetworkDetailPanelSection[];
+}
+
+export interface NetworkEvidencePanelItem {
+  title: string;
+  kind: string;
+  excerpt: string;
+  contextBefore: string[];
+  contextAfter: string[];
+  sourceSystem?: string | null;
+  sourceTimestamp?: string | null;
+  actorName?: string | null;
+  conversationLabel?: string | null;
+  sourceMessageId?: string | null;
+  memoryId?: string | null;
+}
+
+export interface NetworkEvidencePanel {
+  title: string;
+  subtitle: string;
+  items: NetworkEvidencePanelItem[];
+}
+
+export interface NetworkSavedViewSummary {
+  id: string;
+  viewName: string;
+  queryText: string | null;
+  updatedAt: string;
+}
+
+export interface NetworkSnapshotSummary {
+  id: string;
+  snapshotName: string;
+  createdAt: string;
+}
+
+export interface NetworkGraphResponse {
+  ok: true;
+  sceneMode: NetworkSceneMode;
+  graph: {
+    id: string;
+    title: string;
+    layoutMode: NetworkLayoutMode;
+    selectedNodeId: string | null;
+    selectedEdgeId?: string | null;
+    nodes: NetworkGraphNode[];
+    edges: NetworkGraphEdge[];
+  };
+  answerSummary: string;
+  sceneActions: string[];
+  commandSuggestions: string[];
+  detailPanel: NetworkDetailPanel | null;
+  evidencePanel: NetworkEvidencePanel | null;
+  savedViews: NetworkSavedViewSummary[];
+  snapshots: NetworkSnapshotSummary[];
+  weakHiddenCount: number;
+}
+
 export interface V2AgentRequestEnvelope {
   schemaVersion: string;
   messageId: string;
@@ -130,12 +350,18 @@ export interface V2EvidenceRef {
   actorId?: string | null;
   actorType?: string | null;
   sourceConversationId?: string | null;
+  sourceConversationLabel?: string | null;
   sourceTimestamp: string | null;
   entityLabel?: string | null;
   excerpt: string;
   similarity: number;
   contextRole?: "direct" | "indirect" | "uncertain";
   qualityState: V2ArtifactState;
+}
+
+export interface AskGraphSuggestion {
+  ctaLabel: string;
+  prompt: string;
 }
 
 export interface V2AskResponse {
@@ -147,6 +373,9 @@ export interface V2AskResponse {
   answer: V2AnswerContract;
   qualitySignals: Record<string, unknown>;
   evidence: V2EvidenceRef[];
+  graphable?: boolean;
+  graphSuggestion?: AskGraphSuggestion | null;
+  sceneSeed?: AnswerSceneSeed | null;
   debugTrace?: {
     runId: string;
     traceUrl: string;
@@ -157,6 +386,8 @@ export interface V2RetrievalAnchor {
   canonicalId: string;
   memoryId: string;
   conversationId: string;
+  sourceConversationId: string | null;
+  sourceConversationLabel: string | null;
   sourceSystem: string;
   sourceMessageId: string | null;
   replyToMessageId: string | null;
@@ -174,6 +405,8 @@ export interface V2ContextMessage {
   canonicalId: string;
   memoryId: string;
   conversationId: string;
+  sourceConversationId: string | null;
+  sourceConversationLabel: string | null;
   sourceMessageId: string | null;
   replyToMessageId: string | null;
   actorId: string | null;

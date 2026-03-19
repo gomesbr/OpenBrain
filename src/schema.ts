@@ -2,6 +2,7 @@ import { pool } from "./db.js";
 
 const SCHEMA_SQL = `
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS unaccent;
 
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS trigger AS $$
@@ -166,6 +167,17 @@ CREATE INDEX IF NOT EXISTS idx_brain_edges_namespace
   ON brain_relationship_edges(chat_namespace, weight DESC);
 CREATE INDEX IF NOT EXISTS idx_brain_facts_domain_ts
   ON brain_facts(chat_namespace, domain, source_timestamp DESC);
+
+CREATE INDEX IF NOT EXISTS idx_brain_facts_subject_entity
+  ON brain_facts(subject_entity_id)
+  WHERE subject_entity_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_brain_facts_object_entity
+  ON brain_facts(object_entity_id)
+  WHERE object_entity_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_brain_entity_aliases_entity_id
+  ON brain_entity_aliases(entity_id);
 CREATE INDEX IF NOT EXISTS idx_brain_rollups_day
   ON brain_daily_rollups(chat_namespace, day DESC, domain);
 CREATE INDEX IF NOT EXISTS idx_brain_insight_pack
@@ -290,6 +302,25 @@ CREATE TABLE IF NOT EXISTS actor_aliases (
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (chat_namespace, alias)
 );
+
+CREATE TABLE IF NOT EXISTS actor_label_overrides (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  chat_namespace text NOT NULL,
+  normalized_label text NOT NULL,
+  display_label text NOT NULL,
+  classification text NOT NULL CHECK (classification IN ('group_chat', 'system', 'tool', 'ignore', 'person', 'unknown')),
+  source_system text NOT NULL DEFAULT '',
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (chat_namespace, normalized_label, source_system)
+);
+
+ALTER TABLE actor_aliases
+  DROP CONSTRAINT IF EXISTS actor_aliases_actor_id_fkey;
+ALTER TABLE actor_aliases
+  ADD CONSTRAINT actor_aliases_actor_id_fkey
+  FOREIGN KEY (actor_id) REFERENCES actors(actor_id) ON DELETE CASCADE;
 
 CREATE TABLE IF NOT EXISTS canonical_messages (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1323,6 +1354,8 @@ CREATE INDEX IF NOT EXISTS idx_actor_source_profile_lookup
   ON actor_source_profile(chat_namespace, source_system, actor_id);
 CREATE INDEX IF NOT EXISTS idx_actor_aliases_lookup
   ON actor_aliases(chat_namespace, alias);
+CREATE INDEX IF NOT EXISTS idx_actor_label_overrides_lookup
+  ON actor_label_overrides(chat_namespace, source_system, normalized_label);
 CREATE INDEX IF NOT EXISTS idx_entity_candidates_state
   ON entity_candidates(chat_namespace, artifact_state, confidence DESC);
 CREATE INDEX IF NOT EXISTS idx_fact_candidates_state
@@ -1429,6 +1462,12 @@ CREATE TRIGGER actor_context_set_updated_at
 DROP TRIGGER IF EXISTS actor_source_profile_set_updated_at ON actor_source_profile;
 CREATE TRIGGER actor_source_profile_set_updated_at
   BEFORE UPDATE ON actor_source_profile
+  FOR EACH ROW
+  EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS actor_label_overrides_set_updated_at ON actor_label_overrides;
+CREATE TRIGGER actor_label_overrides_set_updated_at
+  BEFORE UPDATE ON actor_label_overrides
   FOR EACH ROW
   EXECUTE FUNCTION set_updated_at();
 
@@ -1577,6 +1616,138 @@ CREATE INDEX IF NOT EXISTS idx_meta_enrich_queue_status
   ON metadata_enrichment_queue(status, source_system, chat_namespace, source_timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_meta_enrich_queue_locked
   ON metadata_enrichment_queue(status, locked_at);
+
+CREATE TABLE IF NOT EXISTS network_entities (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  chat_namespace text NOT NULL DEFAULT 'personal.main',
+  entity_type text NOT NULL CHECK (
+    entity_type IN (
+      'owner',
+      'actor',
+      'family_group',
+      'friend_group',
+      'group_chat',
+      'thread',
+      'topic',
+      'project',
+      'location',
+      'event',
+      'time_bucket',
+      'agents_tools'
+    )
+  ),
+  entity_key text NOT NULL,
+  actor_id uuid REFERENCES actors(actor_id) ON DELETE SET NULL,
+  label text NOT NULL,
+  display_label text NOT NULL,
+  full_label text,
+  confidence double precision NOT NULL DEFAULT 0.5,
+  strength double precision NOT NULL DEFAULT 0.5,
+  provenance_mode text NOT NULL DEFAULT 'derived' CHECK (provenance_mode IN ('direct', 'derived')),
+  source_system text,
+  start_at timestamptz,
+  end_at timestamptz,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (chat_namespace, entity_type, entity_key)
+);
+
+CREATE TABLE IF NOT EXISTS network_links (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  chat_namespace text NOT NULL DEFAULT 'personal.main',
+  source_entity_id uuid NOT NULL REFERENCES network_entities(id) ON DELETE CASCADE,
+  target_entity_id uuid NOT NULL REFERENCES network_entities(id) ON DELETE CASCADE,
+  edge_type text NOT NULL CHECK (
+    edge_type IN (
+      'talked_to',
+      'mentioned',
+      'mentioned_by',
+      'in_group_with',
+      'participated_in',
+      'shared_thread',
+      'shared_friend',
+      'discussed_topic',
+      'related_to_project',
+      'happened_at',
+      'active_in_time',
+      'uses_tool',
+      'belongs_to_category'
+    )
+  ),
+  confidence double precision NOT NULL DEFAULT 0.5,
+  strength double precision NOT NULL DEFAULT 0.5,
+  provenance_mode text NOT NULL DEFAULT 'derived' CHECK (provenance_mode IN ('direct', 'derived')),
+  first_seen_at timestamptz,
+  last_seen_at timestamptz,
+  evidence_summary jsonb NOT NULL DEFAULT '[]'::jsonb,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (chat_namespace, source_entity_id, target_entity_id, edge_type)
+);
+
+CREATE TABLE IF NOT EXISTS network_saved_views (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  chat_namespace text NOT NULL DEFAULT 'personal.main',
+  view_name text NOT NULL,
+  owner_actor_id uuid REFERENCES actors(actor_id) ON DELETE SET NULL,
+  query_text text,
+  config jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (chat_namespace, view_name)
+);
+
+CREATE TABLE IF NOT EXISTS network_snapshots (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  chat_namespace text NOT NULL DEFAULT 'personal.main',
+  snapshot_name text NOT NULL,
+  owner_actor_id uuid REFERENCES actors(actor_id) ON DELETE SET NULL,
+  graph_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (chat_namespace, snapshot_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_network_entities_namespace_type
+  ON network_entities(chat_namespace, entity_type, strength DESC, confidence DESC);
+CREATE INDEX IF NOT EXISTS idx_network_entities_actor
+  ON network_entities(actor_id)
+  WHERE actor_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_network_links_namespace_source
+  ON network_links(chat_namespace, source_entity_id, strength DESC, confidence DESC);
+CREATE INDEX IF NOT EXISTS idx_network_links_namespace_target
+  ON network_links(chat_namespace, target_entity_id, strength DESC, confidence DESC);
+CREATE INDEX IF NOT EXISTS idx_network_saved_views_namespace
+  ON network_saved_views(chat_namespace, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_network_snapshots_namespace
+  ON network_snapshots(chat_namespace, created_at DESC);
+
+DROP TRIGGER IF EXISTS network_entities_set_updated_at ON network_entities;
+CREATE TRIGGER network_entities_set_updated_at
+  BEFORE UPDATE ON network_entities
+  FOR EACH ROW
+  EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS network_links_set_updated_at ON network_links;
+CREATE TRIGGER network_links_set_updated_at
+  BEFORE UPDATE ON network_links
+  FOR EACH ROW
+  EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS network_saved_views_set_updated_at ON network_saved_views;
+CREATE TRIGGER network_saved_views_set_updated_at
+  BEFORE UPDATE ON network_saved_views
+  FOR EACH ROW
+  EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS network_snapshots_set_updated_at ON network_snapshots;
+CREATE TRIGGER network_snapshots_set_updated_at
+  BEFORE UPDATE ON network_snapshots
+  FOR EACH ROW
+  EXECUTE FUNCTION set_updated_at();
 
 DROP TRIGGER IF EXISTS metadata_enrichment_queue_set_updated_at ON metadata_enrichment_queue;
 CREATE TRIGGER metadata_enrichment_queue_set_updated_at

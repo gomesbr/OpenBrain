@@ -1,0 +1,14 @@
+{
+  "whatsappdump__WhatsApp Chat - Joa_o Paulo 2.zip___chat::segment:1:4096ef84-270c-4c73-8e51-854b24215457": {
+    "expiresAt": "2026-03-17T06:00:00.000Z",
+    "reason": "slow_family"
+  },
+  "whatsappdump__WhatsApp Chat - POA Network Graph.zip___chat::segment:2:1c7d33a9-9092-4654-b6bc-a204a571523b": {
+    "expiresAt": "2026-03-17T06:00:00.000Z",
+    "reason": "slow_family"
+  },
+  "whatsappdump__WhatsApp Chat - Work Latinos.zip___chat::segment:5:9705778b-3cfc-4dc9-b768-30ed76028124": {
+    "expiresAt": "2026-03-17T06:00:00.000Z",
+    "reason": "slow_family"
+  }
+}

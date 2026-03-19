@@ -75,12 +75,18 @@ import { applyUniversalQualityGate, materializeCandidates, remediateLegacyArtifa
 import { adjudicateQuality, evaluateQuality, getQualityMetrics, runCanonicalBootstrap } from "./v2_quality.js";
 import { startV2Worker } from "./v2_runtime.js";
 import {
+  listNetworkSavedArtifacts,
+  rebuildNetworkGraphArtifacts,
+  saveNetworkSnapshot,
+  saveNetworkView,
+  searchNetworkGraph
+} from "./v2_network.js";
+import {
   fetchContextWindow,
   fetchThreadSlice,
   getCapabilitiesPayload,
   searchAnchors,
-  searchPublishedFacts,
-  searchPublishedGraph
+  searchPublishedFacts
 } from "./v2_search.js";
 import {
   authenticateService,
@@ -108,6 +114,7 @@ import type {
   SearchMemoryRequest
 } from "./types.js";
 import type {
+  NetworkGraphRequest,
   V2FeedbackRequest,
   V2Principal,
   V2QualityAdjudicateRequest,
@@ -317,7 +324,39 @@ const v2SearchFactsSchema = z.object({
 
 const v2SearchGraphSchema = z.object({
   chatNamespace: z.string().optional(),
-  limit: z.number().int().min(10).max(500).optional()
+  limit: z.number().int().min(10).max(500).optional(),
+  query: z.string().optional(),
+  command: z.string().optional(),
+  sceneMode: z.enum(["default", "answer_scene"]).optional(),
+  sceneSeed: z.record(z.unknown()).optional(),
+  selectedNodeId: z.string().optional(),
+  selectedEdgeId: z.string().optional(),
+  expandedNodeIds: z.array(z.string()).optional(),
+  collapsedNodeIds: z.array(z.string()).optional(),
+  overflowState: z.record(z.number().int().min(0).max(12)).optional(),
+  filters: z.record(z.unknown()).optional(),
+  confidenceMode: z.enum(["strong_only", "include_weak"]).optional(),
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
+  autoplayTickMode: z.enum(["day", "week", "month"]).optional(),
+  layoutMode: z.enum(["radial", "force", "hierarchical"]).optional(),
+  savedViewId: z.string().optional(),
+  snapshotId: z.string().optional()
+});
+
+const v2NetworkSaveViewSchema = z.object({
+  chatNamespace: z.string().optional(),
+  viewName: z.string().min(1),
+  ownerActorId: z.string().optional().nullable(),
+  queryText: z.string().optional().nullable(),
+  config: z.record(z.unknown()).default({})
+});
+
+const v2NetworkSnapshotSchema = z.object({
+  chatNamespace: z.string().optional(),
+  snapshotName: z.string().min(1),
+  ownerActorId: z.string().optional().nullable(),
+  graph: z.record(z.unknown())
 });
 
 const v2AnchorSearchSchema = z.object({
@@ -852,7 +891,7 @@ async function main(): Promise<void> {
         run: run.rows[0],
         steps: steps.rows
       };
-      res.locals.v2Response = result as Record<string, unknown>;
+      res.locals.v2Response = result as unknown as Record<string, unknown>;
       res.json(result);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -873,7 +912,7 @@ async function main(): Promise<void> {
       res.locals.v2Principal = principal;
       res.locals.v2Operation = "brain.capabilities";
       const result = getCapabilitiesPayload();
-      res.locals.v2Response = result as Record<string, unknown>;
+      res.locals.v2Response = result as unknown as Record<string, unknown>;
       res.json(result);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -987,7 +1026,106 @@ async function main(): Promise<void> {
       res.locals.v2Principal = principal;
       res.locals.v2Operation = "brain.search_graph";
       res.locals.v2Namespace = payload.chatNamespace ?? "personal.main";
-      const result = await searchPublishedGraph(payload);
+      const result = await searchNetworkGraph(payload as unknown as NetworkGraphRequest);
+      res.locals.v2Response = result as unknown as Record<string, unknown>;
+      res.json(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.locals.v2Error = message;
+      res.status(400).json({ ok: false, error: message });
+    }
+  });
+
+  app.get("/v2/brain/search/graph/saved", async (req: Request, res: Response) => {
+    try {
+      ensureV2Enabled();
+      const chatNamespace = String(req.query.chatNamespace ?? "personal.main").trim() || "personal.main";
+      const principal = await resolveV2Principal(req, {
+        allowExternalService: true,
+        namespace: chatNamespace,
+        domain: "brain",
+        operation: "search_graph"
+      });
+      res.locals.v2Principal = principal;
+      res.locals.v2Operation = "brain.search_graph.saved";
+      res.locals.v2Namespace = chatNamespace;
+      const result = await listNetworkSavedArtifacts(chatNamespace);
+      res.locals.v2Response = result as Record<string, unknown>;
+      res.json(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.locals.v2Error = message;
+      res.status(400).json({ ok: false, error: message });
+    }
+  });
+
+  app.post("/v2/brain/search/graph/save_view", async (req: Request, res: Response) => {
+    try {
+      ensureV2Enabled();
+      const payload = v2NetworkSaveViewSchema.parse(req.body);
+      const principal = await resolveV2Principal(req, {
+        allowExternalService: false,
+        namespace: payload.chatNamespace ?? "personal.main",
+        domain: "brain",
+        operation: "search_graph"
+      });
+      res.locals.v2Principal = principal;
+      res.locals.v2Operation = "brain.search_graph.save_view";
+      res.locals.v2Namespace = payload.chatNamespace ?? "personal.main";
+      const result = await saveNetworkView(payload);
+      res.locals.v2Response = result as Record<string, unknown>;
+      res.json(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.locals.v2Error = message;
+      res.status(400).json({ ok: false, error: message });
+    }
+  });
+
+  app.post("/v2/brain/search/graph/snapshot", async (req: Request, res: Response) => {
+    try {
+      ensureV2Enabled();
+      const payload = v2NetworkSnapshotSchema.parse(req.body);
+      const principal = await resolveV2Principal(req, {
+        allowExternalService: false,
+        namespace: payload.chatNamespace ?? "personal.main",
+        domain: "brain",
+        operation: "search_graph"
+      });
+      res.locals.v2Principal = principal;
+      res.locals.v2Operation = "brain.search_graph.snapshot";
+      res.locals.v2Namespace = payload.chatNamespace ?? "personal.main";
+      const result = await saveNetworkSnapshot({
+        chatNamespace: payload.chatNamespace,
+        snapshotName: payload.snapshotName,
+        ownerActorId: payload.ownerActorId,
+        graph: payload.graph as Parameters<typeof saveNetworkSnapshot>[0]["graph"]
+      });
+      res.locals.v2Response = result as Record<string, unknown>;
+      res.json(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.locals.v2Error = message;
+      res.status(400).json({ ok: false, error: message });
+    }
+  });
+
+  app.post("/v2/brain/search/graph/backfill", async (req: Request, res: Response) => {
+    try {
+      ensureV2Enabled();
+      const principal = await resolveV2Principal(req, {
+        allowExternalService: false,
+        namespace: String(req.body?.chatNamespace ?? "personal.main"),
+        domain: "brain",
+        operation: "search_graph"
+      });
+      res.locals.v2Principal = principal;
+      res.locals.v2Operation = "brain.search_graph.backfill";
+      res.locals.v2Namespace = String(req.body?.chatNamespace ?? "personal.main");
+      const result = await rebuildNetworkGraphArtifacts({
+        chatNamespace: String(req.body?.chatNamespace ?? "personal.main"),
+        clearExisting: Boolean(req.body?.clearExisting)
+      });
       res.locals.v2Response = result as Record<string, unknown>;
       res.json(result);
     } catch (error) {

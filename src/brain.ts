@@ -140,7 +140,12 @@ let workerTimer: NodeJS.Timeout | null = null;
 let workerRunning = false;
 
 function normalizeName(value: string): string {
-  return value
+  return String(value ?? "")
+    .replaceAll("\u00a0", " ")
+    .replaceAll("\u202f", " ")
+    .replace(/^[~\s]+/u, "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9\s_-]+/g, "")
@@ -360,9 +365,60 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+async function resolveCanonicalPeople(chatNamespace: string, names: string[]): Promise<string[]> {
+  const normalized = Array.from(new Set(names.map((name) => normalizeName(name)).filter(Boolean)));
+  if (normalized.length === 0) return [];
+
+  const result = await pool.query<{ canonical_name: string }>(
+    `WITH wanted AS (
+       SELECT unnest($2::text[]) AS normalized_name
+     ),
+     actor_matches AS (
+       SELECT DISTINCT a.canonical_name
+         FROM wanted w
+         JOIN actors a
+           ON a.normalized_name = w.normalized_name
+         JOIN actor_context ac
+           ON ac.actor_id = a.actor_id
+          AND ac.chat_namespace = $1
+     ),
+     alias_matches AS (
+       SELECT DISTINCT a.canonical_name
+         FROM wanted w
+         JOIN actor_aliases aa
+           ON lower(
+                regexp_replace(
+                  regexp_replace(
+                    unaccent(replace(replace(aa.alias, chr(160), ' '), chr(8239), ' ')),
+                    '^[~\\s]+',
+                    ''
+                  ),
+                  '[^a-z0-9\\s_-]+',
+                  '',
+                  'g'
+                )
+              ) = w.normalized_name
+         JOIN actors a
+           ON a.actor_id = aa.actor_id
+         JOIN actor_context ac
+           ON ac.actor_id = a.actor_id
+          AND ac.chat_namespace = $1
+          AND aa.chat_namespace = $1
+     )
+     SELECT canonical_name FROM actor_matches
+     UNION
+     SELECT canonical_name FROM alias_matches`,
+    [chatNamespace, normalized]
+  );
+
+  return Array.from(new Set(result.rows.map((row) => String(row.canonical_name ?? "").trim()).filter(Boolean)));
+}
+
 function detectPeople(content: string, metadata: Record<string, unknown>, sourceConversationId: string | null): string[] {
   const names = new Set<string>();
   const contentKind = typeof metadata.content_kind === "string" ? metadata.content_kind : "";
+  const conversationLabel = parseWhatsappConversationLabel(sourceConversationId);
+  const normalizedConversationLabel = conversationLabel ? normalizeName(conversationLabel) : "";
 
   const isLikelyNoisePersonName = (value: string): boolean => {
     const raw = String(value ?? "").trim();
@@ -383,7 +439,12 @@ function detectPeople(content: string, metadata: Record<string, unknown>, source
   };
 
   const speaker = metadata.speaker;
-  if (typeof speaker === "string" && speaker.trim() && !isLikelyNoisePersonName(speaker)) {
+  if (
+    typeof speaker === "string"
+    && speaker.trim()
+    && !isLikelyNoisePersonName(speaker)
+    && (!normalizedConversationLabel || normalizeName(speaker) !== normalizedConversationLabel)
+  ) {
     names.add(speaker.trim());
   }
 
@@ -393,21 +454,6 @@ function detectPeople(content: string, metadata: Record<string, unknown>, source
       if (typeof item === "string" && item.trim() && !isLikelyNoisePersonName(item)) {
         names.add(item.trim());
       }
-    }
-  }
-
-  const conversationLabel = parseWhatsappConversationLabel(sourceConversationId);
-  if (conversationLabel && !isLikelyGroupLabel(conversationLabel) && !isLikelyNoisePersonName(conversationLabel)) {
-    names.add(conversationLabel);
-  }
-
-  // Avoid noisy regex name extraction on highly structured content.
-  if (contentKind !== "table" && contentKind !== "number_series") {
-    const matches = content.match(NAME_RE) ?? [];
-    for (const match of matches) {
-      if (STOP_NAMES.has(match)) continue;
-      if (isLikelyNoisePersonName(match)) continue;
-      names.add(match.trim());
     }
   }
 
@@ -650,7 +696,8 @@ async function processMemoryItem(memoryItemId: string): Promise<void> {
   if (!row || !row.chat_namespace) return;
 
   const metadata = asRecord(row.metadata);
-  const people = detectPeople(row.content, metadata, row.source_conversation_id).filter((name) => !isOwnerAlias(name));
+  const detectedPeople = detectPeople(row.content, metadata, row.source_conversation_id).filter((name) => !isOwnerAlias(name));
+  const people = await resolveCanonicalPeople(row.chat_namespace, detectedPeople);
   const domainCandidates = inferDomainCandidates(row.content, metadata, row.source_system, row.source_conversation_id, people);
   const primaryDomain = domainCandidates[0]?.domain ?? "other";
   const seenAt = parseDateOrNow(row.source_timestamp ?? row.created_at);

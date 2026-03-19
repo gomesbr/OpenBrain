@@ -1,1776 +1,4 @@
-export function renderAppHtml(): string {
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OpenBrain 360</title>
-  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.31.0/dist/cytoscape.min.js"></script>
-  <style>
-    :root {
-      --bg: #07111f;
-      --panel: #0b1f38;
-      --panel-soft: #0d2847;
-      --text: #dfe8f4;
-      --muted: #8ca3bf;
-      --line: #1f3b60;
-      --accent: #46c0ff;
-      --ok: #39d98a;
-      --warn: #f5ad42;
-      --danger: #ff6b6b;
-      --shadow: 0 8px 24px rgba(0,0,0,0.28);
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
-      color: var(--text);
-      background:
-        radial-gradient(circle at 10% 10%, rgba(70, 192, 255, 0.14), transparent 45%),
-        radial-gradient(circle at 90% 90%, rgba(57, 217, 138, 0.10), transparent 45%),
-        linear-gradient(180deg, #06101d, #050c16 70%);
-      min-height: 100vh;
-    }
-    #loginPage, #appPage { min-height: 100vh; }
-    #loginPage {
-      display: grid;
-      place-items: center;
-      padding: 24px;
-    }
-    .login-card {
-      width: min(420px, 100%);
-      background: rgba(8, 24, 43, 0.94);
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      padding: 24px;
-      box-shadow: var(--shadow);
-    }
-    .login-card h1 {
-      margin: 0 0 8px;
-      font-size: 28px;
-      letter-spacing: 0.4px;
-    }
-    .login-card p {
-      margin: 0 0 20px;
-      color: var(--muted);
-      font-size: 14px;
-    }
-    input, select, button, textarea {
-      font: inherit;
-      color: var(--text);
-      background: #0a1b31;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 10px 12px;
-    }
-    button {
-      background: linear-gradient(180deg, #12375f, #102f50);
-      border-color: #2b537f;
-      cursor: pointer;
-      font-weight: 600;
-    }
-    button:hover { filter: brightness(1.08); }
-    .error { color: var(--danger); font-size: 13px; min-height: 18px; }
 
-    #appPage { display: none; }
-    .layout {
-      display: grid;
-      grid-template-columns: 240px 1fr;
-      min-height: 100vh;
-    }
-    .rail {
-      border-right: 1px solid var(--line);
-      padding: 16px 12px;
-      background: linear-gradient(180deg, rgba(9, 28, 49, 0.92), rgba(7, 20, 36, 0.98));
-    }
-    .brand {
-      font-size: 18px;
-      font-weight: 800;
-      margin: 6px 8px 16px;
-    }
-    .nav-btn {
-      width: 100%;
-      text-align: left;
-      margin: 0 0 8px;
-      background: #0b213b;
-      border: 1px solid var(--line);
-      color: var(--text);
-      border-radius: 10px;
-    }
-    .nav-btn.active {
-      border-color: var(--accent);
-      box-shadow: inset 0 0 0 1px rgba(70,192,255,0.5);
-      background: #0f2e4f;
-    }
-    .content {
-      display: grid;
-      grid-template-rows: auto 1fr;
-      min-width: 0;
-    }
-    .topbar {
-      border-bottom: 1px solid var(--line);
-      padding: 12px 16px;
-      display: grid;
-      grid-template-columns: 1fr auto auto auto auto auto;
-      gap: 8px;
-      align-items: center;
-      position: sticky;
-      top: 0;
-      z-index: 10;
-      backdrop-filter: blur(10px);
-      background: rgba(7, 20, 36, 0.86);
-    }
-    .panel-wrap {
-      padding: 14px;
-      display: grid;
-      gap: 12px;
-      align-content: start;
-      overflow: auto;
-    }
-    .panel {
-      background: rgba(12, 35, 60, 0.78);
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 12px;
-      box-shadow: var(--shadow);
-    }
-    .panel h3, .panel h4 { margin: 0 0 8px; }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-      gap: 12px;
-    }
-    .metric {
-      background: #0b2440;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 10px;
-    }
-    .metric b { font-size: 24px; display: block; margin-top: 4px; }
-    .chart {
-      min-height: 320px;
-      width: 100%;
-    }
-    .graph {
-      min-height: 580px;
-      width: 100%;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #081627;
-    }
-    .people-panel {
-      min-height: calc(100vh - 220px);
-      display: grid;
-      grid-template-rows: auto 1fr;
-    }
-    .network-shell {
-      display: grid;
-      grid-template-columns: minmax(300px, 360px) minmax(0, 1fr) minmax(280px, 340px);
-      gap: 16px;
-      min-height: calc(100vh - 220px);
-      align-items: start;
-    }
-    .network-rail,
-    .network-canvas,
-    .network-detail {
-      border: 1px solid #d5e3ee;
-      border-radius: 22px;
-      background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(245,250,255,0.94));
-      box-shadow: 0 18px 48px rgba(16, 39, 66, 0.12);
-      min-width: 0;
-    }
-    .network-rail,
-    .network-detail {
-      padding: 16px;
-      display: grid;
-      gap: 12px;
-      align-content: start;
-    }
-    .network-canvas {
-      position: relative;
-      overflow: hidden;
-      padding: 16px;
-      display: grid;
-      grid-template-rows: auto auto minmax(520px, 1fr) auto;
-      gap: 12px;
-    }
-    .network-canvas::before {
-      content: "";
-      position: absolute;
-      inset: 0;
-      pointer-events: none;
-      background:
-        radial-gradient(circle at 18% 16%, rgba(152, 205, 255, 0.18), transparent 20%),
-        radial-gradient(circle at 82% 14%, rgba(116, 214, 190, 0.12), transparent 18%),
-        radial-gradient(circle at 52% 82%, rgba(255, 199, 122, 0.12), transparent 22%),
-        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'%3E%3Cg fill='none' stroke='%2396aec8' stroke-opacity='0.14' stroke-width='1'%3E%3Cpath d='M24 40h36v36H24z'/%3E%3Cpath d='M160 36h52v52h-52z'/%3E%3Ccircle cx='72' cy='152' r='18'/%3E%3Ccircle cx='186' cy='168' r='12'/%3E%3Cpath d='M60 58l30 34M90 92l44-18M72 170l32-24M176 120l24 28'/%3E%3C/g%3E%3C/svg%3E");
-      opacity: 0.26;
-      z-index: 0;
-    }
-    .network-shell h3,
-    .network-shell h4 { color: #15324a; }
-    .network-control-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-    }
-    .network-control-grid input,
-    .network-control-grid select,
-    .network-control-grid button {
-      width: 100%;
-    }
-    .network-rail input,
-    .network-rail select,
-    .network-rail button,
-    .network-detail button {
-      border-radius: 14px;
-      border: 1px solid #d6e4ef;
-      background: linear-gradient(180deg, #ffffff, #f4f9fd);
-      color: #1b3852;
-      box-shadow: 0 10px 22px rgba(27, 57, 89, 0.08);
-    }
-    .network-rail button,
-    .network-detail button {
-      font-weight: 600;
-    }
-    .network-rail input::placeholder {
-      color: #86a1bb;
-    }
-    .network-chat-thread {
-      border: 1px solid #d9e7f2;
-      border-radius: 18px;
-      background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(247,251,255,0.95));
-      padding: 12px;
-      min-height: 240px;
-      max-height: 340px;
-      overflow: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .network-chat-bubble {
-      border: 1px solid #d9e6f2;
-      border-radius: 18px;
-      padding: 10px 12px;
-      line-height: 1.45;
-      white-space: pre-wrap;
-      color: #1d3953;
-      box-shadow: 0 10px 22px rgba(26, 55, 88, 0.08);
-    }
-    .network-chat-bubble.user {
-      align-self: flex-end;
-      background: linear-gradient(180deg, #eef7ff, #e7f4ff);
-      border-color: #c2dbf0;
-    }
-    .network-chat-bubble.agent {
-      align-self: flex-start;
-      background: linear-gradient(180deg, #ffffff, #f6fbff);
-      border-color: #d8e7f5;
-    }
-    .network-suggestion-wrap {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-    .network-suggestion {
-      padding: 8px 12px;
-      border-radius: 999px;
-      border: 1px solid #d1e3f3;
-      background: rgba(255,255,255,0.92);
-      color: #214261;
-      font-size: 12px;
-      cursor: pointer;
-      box-shadow: 0 8px 16px rgba(34, 74, 112, 0.08);
-    }
-    .network-toolbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-    .network-summary {
-      position: relative;
-      z-index: 1;
-      border: 1px solid #d9e6f2;
-      border-radius: 16px;
-      background: rgba(255,255,255,0.9);
-      padding: 12px 14px;
-      color: #3f6487;
-      font-size: 13px;
-      line-height: 1.45;
-    }
-    .network-graph {
-      position: relative;
-      z-index: 1;
-      min-height: 760px;
-      border: 1px solid #d9e8f2;
-      border-radius: 24px;
-      background:
-        radial-gradient(circle at top left, rgba(255,255,255,0.86), rgba(245,250,255,0.92) 48%, rgba(238,246,252,0.96)),
-        linear-gradient(180deg, rgba(255,255,255,0.92), rgba(243,248,252,0.96));
-      box-shadow: inset 0 1px 0 rgba(255,255,255,0.9);
-    }
-    .network-hover-card {
-      position: absolute;
-      z-index: 3;
-      max-width: 260px;
-      pointer-events: none;
-      border-radius: 18px;
-      border: 1px solid rgba(214, 227, 240, 0.95);
-      background: rgba(255,255,255,0.96);
-      box-shadow: 0 18px 36px rgba(30, 61, 95, 0.14);
-      padding: 12px 14px;
-      color: #1f3b56;
-      display: grid;
-      gap: 6px;
-      backdrop-filter: blur(12px);
-    }
-    .network-hover-title {
-      font-size: 13px;
-      font-weight: 700;
-      color: #1a3550;
-    }
-    .network-hover-body {
-      color: #5f7c99;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .network-mini {
-      min-height: 180px;
-      border: 1px solid #d9e8f2;
-      border-radius: 18px;
-      background: linear-gradient(180deg, rgba(255,255,255,0.9), rgba(246,250,255,0.96));
-    }
-    .network-detail-section {
-      border: 1px solid #dce8f2;
-      border-radius: 18px;
-      background: rgba(255,255,255,0.92);
-      padding: 14px;
-      display: grid;
-      gap: 10px;
-      box-shadow: 0 10px 26px rgba(27, 55, 88, 0.08);
-    }
-    .network-evidence-panel {
-      position: relative;
-      z-index: 1;
-      border: 1px solid #dce8f2;
-      border-radius: 20px;
-      background: rgba(255,255,255,0.94);
-      padding: 14px;
-      display: grid;
-      gap: 10px;
-      box-shadow: 0 10px 26px rgba(27, 55, 88, 0.08);
-    }
-    .network-evidence-list {
-      display: grid;
-      gap: 10px;
-      max-height: 220px;
-      overflow: auto;
-    }
-    .network-evidence-item {
-      border: 1px solid #dce8f2;
-      border-radius: 14px;
-      background: linear-gradient(180deg, #ffffff, #f8fbfe);
-      padding: 12px;
-      display: grid;
-      gap: 6px;
-      color: #183552;
-      box-shadow: 0 8px 18px rgba(27, 55, 88, 0.06);
-    }
-    .network-evidence-meta {
-      color: #5f7c99;
-      font-size: 12px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-    .network-evidence-context {
-      color: #61788d;
-      font-size: 12px;
-      line-height: 1.45;
-      display: grid;
-      gap: 4px;
-    }
-    .network-detail-section:first-of-type {
-      margin-top: 4px;
-    }
-    .network-detail-list {
-      display: grid;
-      gap: 6px;
-      font-size: 12px;
-      color: #5c7997;
-      line-height: 1.45;
-    }
-    .network-save-list {
-      display: grid;
-      gap: 6px;
-      max-height: 220px;
-      overflow: auto;
-    }
-    .network-save-item {
-      border: 1px solid #d8e5ef;
-      border-radius: 14px;
-      background: #fdfefe;
-      padding: 10px;
-      display: grid;
-      gap: 6px;
-      font-size: 12px;
-    }
-    .network-chip-row {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
-    .network-chip {
-      display: inline-flex;
-      align-items: center;
-      border-radius: 999px;
-      padding: 6px 12px;
-      border: 1px solid #d7e5ef;
-      font-size: 12px;
-      background: rgba(255,255,255,0.86);
-      color: #31506f;
-      box-shadow: 0 8px 18px rgba(31, 63, 98, 0.08);
-    }
-    .network-detail-title {
-      font-size: 20px;
-      font-weight: 700;
-      color: #17324a;
-    }
-    .network-muted {
-      color: #4f6f8d;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .timeline-item {
-      padding: 10px 0;
-      border-bottom: 1px solid #1f3b60;
-    }
-    .timeline-domain {
-      font-weight: 700;
-      text-transform: capitalize;
-      margin-right: 6px;
-    }
-    .timeline-chip {
-      display: inline-block;
-      margin-right: 6px;
-      padding: 2px 8px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      font-size: 12px;
-      color: #9fc3e8;
-      text-transform: capitalize;
-      background: rgba(15, 46, 79, 0.55);
-    }
-    .hidden { display: none !important; }
-    .badge {
-      display: inline-flex;
-      border-radius: 999px;
-      padding: 3px 10px;
-      border: 1px solid var(--line);
-      font-size: 12px;
-      color: var(--muted);
-      margin-right: 6px;
-    }
-    .badge.mode-private { border-color: var(--ok); color: var(--ok); }
-    .badge.mode-share_safe { border-color: var(--warn); color: var(--warn); }
-    .badge.mode-demo { border-color: var(--danger); color: var(--danger); }
-    .muted { color: var(--muted); }
-    .ask-answer { white-space: pre-wrap; line-height: 1.5; color: var(--text); }
-    .ask-graph-suggestion {
-      margin-top: 12px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-      padding: 10px 12px;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: rgba(10, 26, 45, 0.55);
-    }
-    .ask-graph-btn {
-      border: 1px solid var(--accent);
-      border-radius: 999px;
-      padding: 8px 14px;
-      background: #0f2e4f;
-      color: var(--text);
-      cursor: pointer;
-      font-weight: 600;
-    }
-    .ask-graph-btn:hover {
-      background: #12365a;
-    }
-    .ask-tabs {
-      display: inline-flex;
-      gap: 8px;
-      margin: 6px 0 10px;
-    }
-    .ask-tab-btn {
-      padding: 6px 10px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      background: #0b213b;
-      color: var(--muted);
-      cursor: pointer;
-      font-size: 13px;
-    }
-    .ask-tab-btn.active {
-      border-color: var(--accent);
-      color: var(--text);
-      background: #0f2e4f;
-    }
-    .ask-debug-flow {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #081627;
-      padding: 10px;
-      max-height: 520px;
-      overflow: auto;
-    }
-    .ask-debug-swim {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      min-width: max-content;
-    }
-    .ask-debug-lane-row {
-      display: grid;
-      gap: 8px;
-      position: sticky;
-      top: 0;
-      z-index: 2;
-      background: #081627;
-      padding-bottom: 6px;
-    }
-    .ask-debug-lane {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #0b2036;
-      padding: 6px 8px;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .ask-debug-row {
-      display: grid;
-      gap: 8px;
-      align-items: start;
-    }
-    .ask-debug-cell {
-      min-height: 4px;
-    }
-    .ask-debug-bubble {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #0b2036;
-      padding: 8px;
-      line-height: 1.4;
-    }
-    .ask-debug-bubble.request { border-color: #2a7db7; }
-    .ask-debug-bubble.response { border-color: #267a64; }
-    .ask-debug-bubble.internal { border-color: #2a3e57; }
-    .ask-debug-bubble pre {
-      margin: 6px 0 0;
-      white-space: pre-wrap;
-      max-height: 220px;
-      overflow: auto;
-      font-size: 12px;
-    }
-    .ask-debug-connector-cell {
-      min-height: 20px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .ask-debug-arrow {
-      margin: 0;
-      color: var(--muted);
-      white-space: pre;
-      line-height: 1;
-      font-size: 11px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-      user-select: none;
-    }
-    .ask-debug-meta {
-      font-size: 12px;
-      color: var(--muted);
-      margin-bottom: 4px;
-    }
-    .ask-loading {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      color: var(--muted);
-      font-size: 13px;
-      min-height: 20px;
-      margin: 8px 0 0;
-    }
-    .spinner {
-      width: 14px;
-      height: 14px;
-      border: 2px solid #284868;
-      border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-    }
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-    .evidence {
-      margin-top: 8px;
-      border-top: 1px dashed var(--line);
-      padding-top: 8px;
-    }
-    .ask-shell {
-      display: grid;
-      grid-template-columns: minmax(0, 2.4fr) minmax(320px, 1fr);
-      gap: 12px;
-      min-height: calc(100vh - 210px);
-    }
-    .ask-workspace-panel {
-      min-height: 100%;
-    }
-    .ask-chat-panel {
-      display: grid;
-      grid-template-rows: auto 1fr auto;
-      min-height: 100%;
-    }
-    .ask-chat-thread {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #081627;
-      padding: 10px;
-      overflow: auto;
-      min-height: 520px;
-      max-height: calc(100vh - 320px);
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .ask-chat-bubble {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 8px 10px;
-      line-height: 1.45;
-      white-space: pre-wrap;
-      max-width: 100%;
-    }
-    .ask-chat-bubble.user {
-      align-self: flex-end;
-      background: #103154;
-      border-color: #2d6594;
-    }
-    .ask-chat-bubble.agent {
-      align-self: flex-start;
-      background: #0b2036;
-      border-color: #2a3e57;
-    }
-    .ask-chat-input-wrap {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 8px;
-      margin-top: 10px;
-    }
-    .ask-chat-note {
-      font-size: 12px;
-      color: var(--muted);
-      margin-bottom: 8px;
-    }
-    .evo-shell {
-      display: grid;
-      gap: 12px;
-    }
-    .evo-topbar {
-      display: grid;
-      grid-template-columns: minmax(320px, 1fr) minmax(220px, auto) auto auto;
-      gap: 8px;
-      align-items: center;
-    }
-    .evo-select-wrap {
-      display: grid;
-      gap: 6px;
-    }
-    .evo-select-note {
-      font-size: 12px;
-      color: var(--muted);
-    }
-    .evo-tabs {
-      display: inline-flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .evo-tab-btn {
-      padding: 6px 10px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      background: #0b213b;
-      color: var(--muted);
-      cursor: pointer;
-      font-size: 13px;
-    }
-    .evo-tab-btn.active {
-      border-color: var(--accent);
-      color: var(--text);
-      background: #0f2e4f;
-    }
-    .evo-kpi-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 10px;
-    }
-    .evo-kpi {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #0b2036;
-      padding: 10px;
-    }
-    .evo-kpi .label {
-      color: var(--muted);
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-    }
-    .evo-kpi .value {
-      margin-top: 4px;
-      font-size: 18px;
-      font-weight: 700;
-    }
-    .evo-grid-2 {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      gap: 12px;
-    }
-    .evo-grid-2-rail {
-      display: grid;
-      grid-template-columns: minmax(0, 1.6fr) minmax(320px, 1fr);
-      gap: 12px;
-    }
-    .evo-lineage {
-      min-height: 360px;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #081627;
-    }
-    .evo-runtime-strip {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 10px;
-    }
-    .preloop-shell {
-      display: grid;
-      grid-template-columns: minmax(220px, 300px) minmax(0, 1fr) minmax(260px, 320px);
-      gap: 12px;
-      align-items: start;
-    }
-    .preloop-queue-list {
-      max-height: 460px;
-      overflow: auto;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #081627;
-      padding: 8px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-    .preloop-item {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #0b2036;
-      padding: 8px;
-      cursor: pointer;
-      font-size: 12px;
-    }
-    .preloop-item.active {
-      border-color: var(--accent);
-      box-shadow: inset 0 0 0 1px rgba(70,192,255,0.5);
-    }
-    .preloop-card {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #081627;
-      padding: 10px;
-      min-height: 420px;
-      min-width: 0;
-    }
-    .preloop-actions {
-      display: grid;
-      gap: 8px;
-    }
-    .preloop-glossary {
-      display: grid;
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-    .preloop-glossary-card {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #0b2036;
-      padding: 10px;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .preloop-filter-grid {
-      display: grid;
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-    .preloop-count-blocks {
-      display: grid;
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-    .preloop-count-block {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #081627;
-      padding: 10px;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .preloop-stage-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(240px, 1fr));
-      gap: 10px;
-      margin-bottom: 10px;
-      align-items: start;
-    }
-    @media (max-width: 1080px) {
-      .preloop-stage-grid {
-        grid-template-columns: repeat(2, minmax(240px, 1fr));
-      }
-    }
-    @media (max-width: 760px) {
-      .preloop-stage-grid {
-        grid-template-columns: minmax(0, 1fr);
-      }
-    }
-    .preloop-stage-card {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: linear-gradient(180deg, #0b2036, #09192c);
-      padding: 12px;
-      box-shadow: var(--shadow);
-    }
-    .preloop-stage-card.ready {
-      border-color: rgba(57, 217, 138, 0.55);
-      box-shadow: inset 0 0 0 1px rgba(57, 217, 138, 0.18), var(--shadow);
-    }
-    .preloop-stage-card.blocked {
-      border-color: rgba(245, 173, 66, 0.4);
-    }
-    .preloop-stage-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-    .preloop-stage-title {
-      font-size: 15px;
-      font-weight: 700;
-      letter-spacing: 0.01em;
-    }
-    .preloop-stage-badge {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 72px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      padding: 4px 10px;
-      font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-    .preloop-stage-badge.ready {
-      color: var(--ok);
-      border-color: rgba(57, 217, 138, 0.55);
-      background: rgba(57, 217, 138, 0.08);
-    }
-    .preloop-stage-badge.blocked {
-      color: var(--warn);
-      border-color: rgba(245, 173, 66, 0.45);
-      background: rgba(245, 173, 66, 0.08);
-    }
-    .preloop-stage-group {
-      margin-top: 10px;
-    }
-    .preloop-stage-group:first-of-type {
-      margin-top: 0;
-    }
-    .preloop-stage-group-title {
-      color: var(--muted);
-      font-size: 11px;
-      margin-bottom: 6px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-    .preloop-stage-metric-list {
-      display: grid;
-      gap: 6px;
-    }
-    .preloop-stage-metric {
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 10px;
-      font-size: 12px;
-      line-height: 1.35;
-    }
-    .preloop-stage-metric strong {
-      font-size: 13px;
-      font-weight: 700;
-    }
-    .preloop-stage-blockers {
-      margin-top: 10px;
-      border-top: 1px solid rgba(31, 59, 96, 0.8);
-      padding-top: 10px;
-      display: grid;
-      gap: 6px;
-      font-size: 12px;
-      line-height: 1.35;
-      color: var(--muted);
-    }
-    .preloop-stage-blocker {
-      padding-left: 10px;
-      position: relative;
-    }
-    .preloop-stage-blocker::before {
-      content: "";
-      position: absolute;
-      left: 0;
-      top: 7px;
-      width: 4px;
-      height: 4px;
-      border-radius: 50%;
-      background: var(--warn);
-    }
-    .preloop-section {
-      margin-top: 12px;
-    }
-    .preloop-section:first-of-type {
-      margin-top: 0;
-    }
-    .preloop-section-title {
-      color: var(--muted);
-      font-size: 12px;
-      margin-bottom: 6px;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-    }
-    .preloop-evidence-list {
-      display: grid;
-      gap: 8px;
-    }
-    .preloop-evidence-card {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #0b2036;
-      padding: 10px;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .preloop-decision-group {
-      display: grid;
-      gap: 6px;
-    }
-    .preloop-button-row {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .preloop-choice-btn {
-      padding: 8px 12px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      background: #0b213b;
-      color: var(--muted);
-      cursor: pointer;
-      font-size: 13px;
-    }
-    .preloop-choice-btn.active {
-      border-color: var(--accent);
-      color: var(--text);
-      background: #11385e;
-    }
-    .preloop-bottom {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 8px;
-      align-items: center;
-      margin-top: 12px;
-    }
-    .ontology-shell {
-      display: grid;
-      grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
-      gap: 12px;
-      align-items: start;
-    }
-    .ontology-column {
-      display: grid;
-      gap: 12px;
-      min-width: 0;
-    }
-    .ontology-list {
-      max-height: 420px;
-      overflow: auto;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #081627;
-      padding: 8px;
-      display: grid;
-      gap: 8px;
-    }
-    .ontology-item {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #0b2036;
-      padding: 10px;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .ontology-item.active {
-      border-color: var(--accent);
-      box-shadow: inset 0 0 0 1px rgba(70,192,255,0.45);
-    }
-    .ontology-toolbar {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto auto;
-      gap: 8px;
-      align-items: center;
-      margin-bottom: 10px;
-    }
-    .ontology-filters {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-    .ontology-stat-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 8px;
-    }
-    .ontology-stat {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #0b2036;
-      padding: 10px;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .ontology-matrix-list {
-      display: grid;
-      gap: 8px;
-    }
-    .ontology-matrix-scroll {
-      margin-top: 10px;
-      max-height: 520px;
-      overflow: auto;
-      padding-right: 4px;
-    }
-    .ontology-pagination {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-top: 10px;
-    }
-    .ontology-pagination-meta {
-      color: var(--muted);
-      font-size: 12px;
-    }
-    .ontology-pagination-actions {
-      display: inline-flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .ontology-matrix-group {
-      display: grid;
-      gap: 8px;
-      margin-bottom: 12px;
-    }
-    .ontology-matrix-group:last-child {
-      margin-bottom: 0;
-    }
-    .ontology-matrix-group-title {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-      color: var(--muted);
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-    }
-    .ontology-matrix-group-grid {
-      display: grid;
-      gap: 8px;
-    }
-    .ontology-matrix-item {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #081627;
-      padding: 10px;
-      display: grid;
-      gap: 8px;
-      min-width: 0;
-    }
-    .ontology-matrix-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .ontology-matrix-title {
-      font-weight: 700;
-      line-height: 1.35;
-    }
-    .ontology-status-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 4px 10px;
-      font-size: 12px;
-      white-space: nowrap;
-      background: #0b2036;
-    }
-    .ontology-status-badge.supported {
-      border-color: #2d7f60;
-      color: #9fe5c4;
-    }
-    .ontology-status-badge.unsupported {
-      border-color: #7a5c2a;
-      color: #f0ce89;
-    }
-    .ontology-status-badge.mixed {
-      border-color: #2d6594;
-      color: #9fd1ff;
-    }
-    .ontology-matrix-stats {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
-    }
-    .ontology-matrix-stat {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #0b2036;
-      padding: 8px;
-      font-size: 12px;
-      line-height: 1.35;
-    }
-    .ontology-matrix-rationale {
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.45;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }
-    .ontology-list-block {
-      display: grid;
-      gap: 6px;
-      margin-top: 8px;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .ontology-list-item {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #0b2036;
-      padding: 8px;
-    }
-    .ontology-empty {
-      color: var(--muted);
-      font-size: 12px;
-      padding: 8px 0;
-    }
-    .ontology-pill-row {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-top: 8px;
-    }
-    .ontology-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      background: #0b2036;
-      padding: 6px 10px;
-      font-size: 12px;
-    }
-    .runctl-actions {
-      display: inline-flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .runctl-log {
-      margin-top: 10px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #081627;
-      padding: 10px;
-      min-height: 220px;
-      max-height: 360px;
-      overflow: auto;
-      white-space: pre-wrap;
-      font-size: 12px;
-      line-height: 1.4;
-    }
-    details { border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
-    summary { cursor: pointer; color: var(--accent); }
-    @media (max-width: 960px) {
-      .layout { grid-template-columns: 1fr; }
-      .rail { border-right: 0; border-bottom: 1px solid var(--line); }
-      .topbar { grid-template-columns: 1fr 1fr; }
-      .ask-shell { grid-template-columns: 1fr; }
-      .ask-chat-panel { order: -1; }
-      .ask-chat-thread { min-height: 360px; max-height: 50vh; }
-      .evo-grid-2,
-      .evo-grid-2-rail,
-      .network-shell,
-      .preloop-shell,
-      .ontology-shell {
-        grid-template-columns: 1fr;
-      }
-      .preloop-bottom {
-        grid-template-columns: 1fr;
-      }
-    }
-  </style>
-</head>
-<body>
-  <section id="loginPage">
-    <div class="login-card">
-      <h1>OpenBrain 360</h1>
-      <p>Personal memory cockpit. Login is required on every open/refresh.</p>
-      <form id="loginForm">
-        <input id="passwordInput" type="password" placeholder="Password" required style="width:100%; margin-bottom:10px;" />
-        <button type="submit" style="width:100%;">Login</button>
-      </form>
-      <div class="error" id="loginError"></div>
-    </div>
-  </section>
-
-  <section id="appPage">
-    <div class="layout">
-      <aside class="rail">
-        <div class="brand">OpenBrain 360</div>
-        <button class="nav-btn active" data-module="brief">Brief</button>
-        <button class="nav-btn" data-module="ask">Ask</button>
-        <button class="nav-btn" data-module="evolution">Evolution</button>
-        <button class="nav-btn" data-module="network">Network</button>
-        <button class="nav-btn" data-module="behavior">Behavior</button>
-        <button class="nav-btn" data-module="timeline">Timeline</button>
-        <button class="nav-btn" data-module="insights">Insights</button>
-        <button class="nav-btn" data-module="ops">Ops</button>
-        <button class="nav-btn" data-module="settings">Settings</button>
-      </aside>
-      <main class="content">
-        <div class="topbar">
-          <input id="globalQuestion" placeholder="Ask anything about your memory..." />
-          <select id="timeframeSelect">
-            <option value="7d">7d</option>
-            <option value="30d" selected>30d</option>
-            <option value="90d">90d</option>
-            <option value="365d">365d</option>
-            <option value="all">all</option>
-          </select>
-          <select id="privacyModeSelect">
-            <option value="private">Private</option>
-            <option value="share_safe">Share-Safe</option>
-            <option value="demo">Demo</option>
-          </select>
-          <button id="askButton">Ask</button>
-          <div id="askLoading" class="ask-loading hidden"><span class="spinner"></span><span>Processing question...</span></div>
-          <button id="lockButton">Lock</button>
-        </div>
-        <div class="panel-wrap">
-          <section id="module-brief">
-            <div class="panel">
-              <h3>Daily Brief <span id="modeBadge" class="badge mode-private">private</span></h3>
-              <div class="grid" id="briefMetrics"></div>
-            </div>
-            <div class="panel"><div id="briefChart" class="chart"></div></div>
-          </section>
-
-          <section id="module-ask" class="hidden">
-            <div class="ask-shell">
-              <div class="panel ask-workspace-panel">
-                <h3>Ask Workspace</h3>
-                <div class="ask-tabs">
-                  <button id="askTabAnswer" class="ask-tab-btn active" type="button">Answer</button>
-                  <button id="askTabDebug" class="ask-tab-btn" type="button">Agent Debug Mode</button>
-                </div>
-                <div id="askPanelAnswer">
-                  <div class="ask-answer" id="askAnswer">Ask a question in the right chat panel.</div>
-                  <div id="askGraphSuggestion" class="ask-graph-suggestion hidden">
-                    <div id="askGraphSuggestionText" class="muted">See this answer in graph mode.</div>
-                    <button id="askShowGraphButton" class="ask-graph-btn" type="button">Show graph</button>
-                  </div>
-                  <details class="evidence">
-                    <summary>Evidence</summary>
-                    <div id="askEvidence" class="muted">No evidence yet.</div>
-                  </details>
-                </div>
-                <div id="askPanelDebug" class="hidden">
-                  <div id="askDebugSummary" class="muted">Run a question to view agent orchestration flow.</div>
-                  <div id="askDebugFlow" class="ask-debug-flow muted">No debug steps yet.</div>
-                </div>
-              </div>
-              <div class="panel ask-chat-panel">
-                <h3>Chat</h3>
-                <div id="askChatNote" class="ask-chat-note">Ask here. If clarification is needed, answer the follow-up to continue.</div>
-                <div id="askChatThread" class="ask-chat-thread">
-                  <div class="ask-chat-bubble agent">I am ready. Ask a question.</div>
-                </div>
-                <div class="ask-chat-input-wrap">
-                  <input id="askChatInput" placeholder="Type your question..." />
-                  <button id="askChatSend" type="button">Send</button>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section id="module-evolution" class="hidden">
-            <div class="evo-shell">
-              <div class="panel">
-                <div class="evo-topbar">
-                  <div class="evo-select-wrap">
-                    <select id="evoExperimentSelect"></select>
-                    <div id="evoExperimentMeta" class="evo-select-note">No experiment loaded.</div>
-                  </div>
-                  <input id="evoExperimentSearch" placeholder="Filter experiments..." />
-                  <button id="evoUseLatest" type="button">Use Latest</button>
-                  <button id="evoRefreshAll" type="button">Refresh</button>
-                </div>
-                <div class="evo-tabs" style="margin-top:10px;">
-                  <button id="evoTabOverview" class="evo-tab-btn active" type="button">Overview</button>
-                  <button id="evoTabOntology" class="evo-tab-btn" type="button">Ontology Review</button>
-                  <button id="evoTabPreloop" class="evo-tab-btn" type="button">Pre-Loop Calibration</button>
-                  <button id="evoTabRunControl" class="evo-tab-btn" type="button">Run Control</button>
-                </div>
-              </div>
-
-              <div id="evoPanelOverview" class="panel">
-                <h3>Strategy Evolution</h3>
-                <div id="evoKpiGrid" class="evo-kpi-grid"></div>
-                <div class="evo-grid-2" style="margin-top:12px;">
-                  <div class="panel"><h4>Performance Frontier</h4><div id="evoFrontierChart" class="chart"></div></div>
-                  <div class="panel"><h4>Learning Velocity</h4><div id="evoVelocityChart" class="chart"></div></div>
-                </div>
-                <div class="evo-grid-2" style="margin-top:12px;">
-                  <div class="panel"><h4>Failure Distribution</h4><div id="evoFailuresChart" class="chart"></div></div>
-                  <div class="panel"><h4>Component Heatmap</h4><div id="evoHeatmapChart" class="chart"></div></div>
-                </div>
-                <div class="evo-grid-2-rail" style="margin-top:12px;">
-                  <div class="panel">
-                    <h4>Hypothesis + Diversity</h4>
-                    <div class="evo-grid-2">
-                      <div><div id="evoHypothesisChart" class="chart"></div></div>
-                      <div><div id="evoDiversityChart" class="chart"></div></div>
-                    </div>
-                  </div>
-                  <div class="panel">
-                    <h4>Lineage + Selected</h4>
-                    <div id="evoLineageGraph" class="evo-lineage"></div>
-                    <div id="evoStrategyDetail" class="muted" style="margin-top:10px;">Select a frontier point to inspect details.</div>
-                  </div>
-                </div>
-                <div class="panel" style="margin-top:12px;">
-                  <h4>Coverage + Runtime Health</h4>
-                  <div id="evoCoverageSummary" class="muted" style="margin-bottom:8px;">No coverage data yet.</div>
-                  <div id="evoRuntimeStrip" class="evo-runtime-strip"></div>
-                </div>
-              </div>
-
-              <div id="evoPanelOntology" class="panel hidden">
-                <h3>Ontology Review</h3>
-                <div class="ontology-toolbar">
-                  <select id="ontologyVersionSelect"></select>
-                  <button id="ontologyUseExperimentVersion" type="button">Use Experiment Version</button>
-                  <button id="ontologyRefreshButton" type="button">Refresh</button>
-                </div>
-                <div class="ontology-shell">
-                  <div class="ontology-column">
-                    <div class="panel">
-                      <h4>Operations</h4>
-                      <div class="runctl-actions">
-                        <button id="ontologyScanSupportButton" type="button">Run Support Scan</button>
-                        <button id="ontologyGenerateCandidatesButton" type="button">Generate Candidates</button>
-                        <button id="ontologyPublishButton" type="button">Publish Version</button>
-                        <button id="ontologyReseedBenchmarkButton" type="button">Regenerate Benchmark</button>
-                        <button id="ontologyRebuildCalibrationButton" type="button">Rebuild Calibration Queue</button>
-                        <button id="ontologyExportButton" type="button">Export Review</button>
-                      </div>
-                      <div id="ontologyActionMsg" class="muted" style="margin-top:8px;">No ontology action yet.</div>
-                    </div>
-                    <div class="panel">
-                      <h4>Support Summary</h4>
-                      <div id="ontologySupportSummary" class="ontology-stat-grid"></div>
-                    </div>
-                  </div>
-                  <div class="ontology-column">
-                    <div class="panel">
-                      <h4>Candidate Queue</h4>
-                      <div class="ontology-filters">
-                        <select id="ontologyCandidateTypeFilter">
-                          <option value="">all candidate types</option>
-                          <option value="new_domain_candidate">new domain</option>
-                          <option value="new_lens_candidate">new lens</option>
-                          <option value="merge_candidate">merge</option>
-                          <option value="split_candidate">split</option>
-                          <option value="unmapped_cluster">unmapped cluster</option>
-                        </select>
-                        <select id="ontologyCandidateStatusFilter">
-                          <option value="">all statuses</option>
-                          <option value="pending">pending</option>
-                          <option value="approved">approved</option>
-                          <option value="deferred">deferred</option>
-                          <option value="rejected">rejected</option>
-                        </select>
-                        <input id="ontologyCandidateSearch" placeholder="filter by title/domain/lens..." />
-                      </div>
-                      <div class="runctl-actions" style="margin-bottom:8px;">
-                        <button id="ontologyBatchApproveButton" type="button">Approve Visible</button>
-                        <button id="ontologyBatchRejectButton" type="button">Reject Visible</button>
-                        <button id="ontologyBatchDeferButton" type="button">Defer Visible</button>
-                      </div>
-                      <div id="ontologyCandidateList" class="ontology-list"></div>
-                    </div>
-                    <div class="panel">
-                      <h4>Draft Taxonomy</h4>
-                      <div id="ontologyDraftSummary"></div>
-                    </div>
-                    <div class="panel">
-                      <h4>Benchmark Freshness</h4>
-                      <div id="ontologyFreshness"></div>
-                    </div>
-                    <div class="panel">
-                      <h4>Metadata / Facet Coverage</h4>
-                      <div class="ontology-filters">
-                        <select id="ontologyFacetTypeFilter">
-                          <option value="">all facet types</option>
-                          <option value="actor_name">actor names</option>
-                          <option value="group_label">group labels</option>
-                          <option value="thread_title">thread titles</option>
-                          <option value="source_system">source systems</option>
-                          <option value="month_bucket">month buckets</option>
-                        </select>
-                        <select id="ontologyFacetStatusFilter">
-                          <option value="">all coverage states</option>
-                          <option value="gap">gaps</option>
-                          <option value="covered">covered</option>
-                          <option value="sparse">sparse</option>
-                        </select>
-                      </div>
-                      <div id="ontologyFacetSummary" class="ontology-stat-grid" style="margin-bottom:10px;"></div>
-                      <div class="ontology-pagination">
-                        <div id="ontologyFacetPageMeta" class="ontology-pagination-meta">Page 1 of 1</div>
-                        <div class="ontology-pagination-actions">
-                          <button id="ontologyFacetPrevButton" type="button">Previous</button>
-                          <button id="ontologyFacetNextButton" type="button">Next</button>
-                        </div>
-                      </div>
-                      <div id="ontologyFacetCoverage"></div>
-                    </div>
-                    <div class="panel">
-                      <h4>Support Matrix</h4>
-                      <div class="ontology-pagination">
-                        <div id="ontologyMatrixPageMeta" class="ontology-pagination-meta">Page 1 of 1</div>
-                        <div class="ontology-pagination-actions">
-                          <button id="ontologyMatrixPrevButton" type="button">Previous</button>
-                          <button id="ontologyMatrixNextButton" type="button">Next</button>
-                        </div>
-                      </div>
-                      <div id="ontologySupportMatrix"></div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div id="evoPanelPreloop" class="panel hidden">
-                <h3>Pre-Loop Calibration</h3>
-                <div class="preloop-shell">
-                  <div class="panel">
-                    <h4>Queue</h4>
-                    <div class="preloop-glossary">
-                      <div class="preloop-glossary-card" id="preloopGlossaryAmbiguity"></div>
-                      <div class="preloop-glossary-card" id="preloopGlossarySets"></div>
-                    </div>
-                    <div class="preloop-count-blocks">
-                      <div id="preloopQueueCounts" class="preloop-count-block">Queue now not loaded.</div>
-                      <div id="preloopDatasetCounts" class="preloop-count-block">Dataset totals not loaded.</div>
-                      <div id="preloopAuthoringCounts" class="preloop-count-block">Authoring totals not loaded.</div>
-                    </div>
-                    <div class="preloop-filter-grid">
-                      <select id="preloopStatusFilter">
-                        <option value="pending">pending only</option>
-                        <option value="labeled">reviewed only</option>
-                        <option value="all">all items</option>
-                      </select>
-                      <select id="preloopVerdictFilter">
-                        <option value="">all verdicts</option>
-                        <option value="yes">yes</option>
-                        <option value="no">no</option>
-                      </select>
-                      <select id="preloopDomainFilter">
-                        <option value="">all domains</option>
-                      </select>
-                      <select id="preloopAmbiguityFilter">
-                        <option value="">all ambiguity classes</option>
-                        <option value="clear">clear</option>
-                        <option value="clarify_required">clarify required</option>
-                        <option value="unresolved">unresolved</option>
-                      </select>
-                      <select id="preloopCaseSetFilter">
-                        <option value="">all sets</option>
-                        <option value="dev">dev</option>
-                        <option value="critical">critical</option>
-                        <option value="certification">certification</option>
-                        <option value="stress">stress</option>
-                        <option value="coverage">coverage</option>
-                      </select>
-                    </div>
-                    <div style="display:grid; grid-template-columns:1fr; gap:8px; margin-bottom:8px;">
-                      <input id="preloopSampleCount" type="number" min="1" max="200" value="20" />
-                    </div>
-                    <button id="preloopGenerateSample" type="button" style="width:100%; margin-bottom:8px;">Generate Sample</button>
-                    <button id="preloopAutoReview" type="button" style="width:100%; margin-bottom:8px;">Generate AI Suggestions</button>
-                    <div id="preloopQueueList" class="preloop-queue-list"></div>
-                  </div>
-                  <div class="preloop-card">
-                    <h4>Case Review</h4>
-                    <div id="preloopCaseMeta" class="muted">Select a case.</div>
-                    <div class="preloop-section">
-                      <div class="preloop-section-title">Question</div>
-                      <div id="preloopQuestionText"></div>
-                    </div>
-                    <div class="preloop-section">
-                      <div class="preloop-section-title">Expected behavior</div>
-                      <div id="preloopExpectedBehavior"></div>
-                    </div>
-                    <div class="preloop-section">
-                      <div class="preloop-section-title">Semantic frame</div>
-                      <div id="preloopSemanticFrame"></div>
-                    </div>
-                    <div class="preloop-section">
-                      <div class="preloop-section-title">Clarification path</div>
-                      <div id="preloopClarificationPath"></div>
-                    </div>
-                    <div class="preloop-section">
-                      <div class="preloop-section-title">Expected answer summary</div>
-                      <div id="preloopExpectedAnswer"></div>
-                    </div>
-                    <div class="preloop-section">
-                      <div class="preloop-section-title">Evidence</div>
-                      <div id="preloopEvidencePreview" class="preloop-evidence-list"></div>
-                    </div>
-                    <div class="preloop-section">
-                      <div class="preloop-section-title">Admission</div>
-                      <div id="preloopAdmission"></div>
-                    </div>
-                    <div class="preloop-section">
-                      <div class="preloop-section-title">Quality gate</div>
-                      <div id="preloopQualityGate"></div>
-                    </div>
-                  </div>
-                  <div class="panel preloop-actions">
-                    <h4>Decision</h4>
-                    <div class="preloop-section">
-                      <div class="preloop-section-title">AI suggestion</div>
-                      <div id="preloopSuggestedReview" class="muted">No AI suggestion yet.</div>
-                    </div>
-                    <div class="preloop-decision-group">
-                      <div class="preloop-section-title">Verdict</div>
-                      <div class="preloop-button-row" id="preloopVerdictGroup">
-                        <button id="preloopVerdictYes" class="preloop-choice-btn active" data-value="yes" type="button">Yes</button>
-                        <button id="preloopVerdictNo" class="preloop-choice-btn" data-value="no" type="button">No</button>
-                      </div>
-                    </div>
-                    <div class="preloop-decision-group">
-                      <div class="preloop-section-title">Ambiguity class</div>
-                      <div class="preloop-button-row" id="preloopAmbiguityGroup">
-                        <button id="preloopAmbiguityClear" class="preloop-choice-btn active" data-value="clear" type="button">Clear</button>
-                        <button id="preloopAmbiguityClarify" class="preloop-choice-btn" data-value="clarify_required" type="button">Clarify required</button>
-                        <button id="preloopAmbiguityUnresolved" class="preloop-choice-btn" data-value="unresolved" type="button">Unresolved</button>
-                      </div>
-                    </div>
-                    <textarea id="preloopNotes" rows="8" placeholder="Notes..."></textarea>
-                    <button id="preloopSaveNext" type="button">Save + Next</button>
-                    <div id="preloopActionMsg" class="muted"></div>
-                  </div>
-                </div>
-                <div class="preloop-bottom">
-                  <div id="preloopStageReadiness" class="muted" style="margin-bottom:8px;">Stage readiness: not loaded.</div>
-                  <div id="preloopReadinessBar" class="muted">Readiness: not loaded.</div>
-                </div>
-              </div>
-
-              <div id="evoPanelRunControl" class="panel hidden">
-                <h3>Run Control</h3>
-                <div id="runControlSummary" class="muted">No experiment selected.</div>
-                <div class="runctl-actions" style="margin-top:8px;">
-                  <select id="runControlLockStage">
-                    <option value="core_ready">Core-ready lock</option>
-                    <option value="selection_ready">Selection-ready lock</option>
-                    <option value="certification_ready">Certification-ready lock</option>
-                  </select>
-                  <button id="runControlLockBenchmark" type="button" disabled>Lock Benchmark</button>
-                  <button id="runControlStartLoop" type="button" disabled>Start Loop</button>
-                  <button id="runControlRunStep" type="button">Run Single Step</button>
-                  <button id="runControlStopLoop" type="button">Stop Loop</button>
-                </div>
-                <div id="runControlLog" class="runctl-log">Waiting.</div>
-              </div>
-            </div>
-          </section>
-
-          <section id="module-network" class="hidden">
-            <div class="network-shell">
-              <div class="network-rail">
-                <div>
-                  <h3 style="margin-bottom:6px; color:#15324a;">Network</h3>
-                  <div class="network-muted">Ask, expand, focus, collapse, and save graph states from the same left rail.</div>
-                </div>
-                <div id="networkSuggestionWrap" class="network-suggestion-wrap"></div>
-                <div id="networkChatThread" class="network-chat-thread">
-                  <div class="network-chat-bubble agent">I can update the graph with prompts like "focus on family", "expand Nelson", or "collapse all".</div>
-                </div>
-                <div class="ask-chat-input-wrap" style="margin-top:0;">
-                  <input id="networkChatInput" placeholder="Ask or command the graph..." />
-                  <button id="networkChatSend" type="button">Run</button>
-                </div>
-                <div class="network-control-grid">
-                  <select id="networkLayoutMode">
-                    <option value="radial">Hybrid</option>
-                    <option value="force">Force</option>
-                    <option value="hierarchical">Hierarchical</option>
-                  </select>
-                  <select id="networkTickMode">
-                    <option value="day">Day</option>
-                    <option value="week" selected>Week</option>
-                    <option value="month">Month</option>
-                  </select>
-                  <input id="networkStartDate" type="date" />
-                  <input id="networkEndDate" type="date" />
-                  <button id="networkPlayButton" type="button">Auto Play</button>
-                  <button id="networkFitButton" type="button">Fit View</button>
-                  <button id="networkToggleWeak" type="button">Show Weak</button>
-                  <button id="networkCollapseAll" type="button">Collapse All</button>
-                  <button id="networkSaveView" type="button">Save View</button>
-                  <button id="networkSaveSnapshot" type="button">Save Snapshot</button>
-                </div>
-              </div>
-              <div class="network-canvas">
-                <div class="network-toolbar">
-                  <div>
-                    <h3 style="margin:0; color:#15324a;">Life Network</h3>
-                    <div id="networkSummaryMeta" class="network-muted">Owner-centered shells load first; expand outward as needed.</div>
-                  </div>
-                  <div class="network-chip-row">
-                    <span id="networkWeakChip" class="network-chip">Weak hidden</span>
-                    <span id="networkLayoutChip" class="network-chip">Radial</span>
-                  </div>
-                </div>
-                <div id="networkAnswerSummary" class="network-summary">Loading network...</div>
-                <div id="networkGraph" class="graph network-graph"></div>
-                <div id="networkHoverCard" class="network-hover-card hidden"></div>
-                <div class="network-evidence-panel">
-                  <div>
-                    <div style="font-weight:700; color:#17324a;">Evidence Reader</div>
-                    <div id="networkEvidenceSubtitle" class="network-muted">Select a leaf node to read the supporting thread or evidence.</div>
-                  </div>
-                  <div id="networkEvidenceList" class="network-evidence-list">
-                    <div class="network-muted">No evidence selected yet.</div>
-                  </div>
-                </div>
-              </div>
-              <div class="network-detail">
-                <div>
-                  <h3 style="margin-bottom:6px; color:#15324a;">Details</h3>
-                  <div id="networkDetailTitle" class="network-detail-title">You</div>
-                  <div id="networkDetailSubtitle" class="network-muted">Select a node to inspect why it exists and what supports it.</div>
-                </div>
-                <div id="networkMiniMap" class="graph network-mini"></div>
-                <div id="networkDetailSections"></div>
-                <div class="network-detail-section">
-                  <div style="font-weight:700;">Saved Views</div>
-                  <div id="networkSavedViews" class="network-save-list"></div>
-                </div>
-                <div class="network-detail-section">
-                  <div style="font-weight:700;">Snapshots</div>
-                  <div id="networkSnapshots" class="network-save-list"></div>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section id="module-behavior" class="hidden">
-            <div class="panel">
-              <h3>Behavior Trends</h3>
-              <div id="behaviorChart" class="chart"></div>
-            </div>
-          </section>
-
-          <section id="module-timeline" class="hidden">
-            <div class="panel">
-              <h3>Timeline</h3>
-              <div id="timelineList" class="muted"></div>
-            </div>
-          </section>
-
-          <section id="module-insights" class="hidden">
-            <div class="panel">
-              <h3>Insight Feed</h3>
-              <div id="insightFeed"></div>
-            </div>
-          </section>
-
-          <section id="module-ops" class="hidden">
-            <div class="panel">
-              <h3>Pipeline and Jobs</h3>
-              <div style="margin-bottom:8px;">
-                <button id="pruneOpsButton">Prune Logs (60d)</button>
-              </div>
-              <div id="opsJobs" class="muted"></div>
-            </div>
-          </section>
-
-          <section id="module-settings" class="hidden">
-            <div class="panel">
-              <h3>Settings</h3>
-              <p class="muted">Login on refresh is enforced by design. Privacy mode is server-side and session-scoped.</p>
-              <div style="display:grid; gap:8px; max-width:420px; margin-bottom:12px;">
-                <input id="currentPasswordInput" type="password" placeholder="Current password" />
-                <input id="newPasswordInput" type="password" placeholder="New password (min 8 chars)" />
-                <button id="rotatePasswordButton">Rotate Password</button>
-                <div id="rotatePasswordResult" class="muted"></div>
-              </div>
-              <button id="logoutButton">Logout</button>
-            </div>
-          </section>
-        </div>
-      </main>
-    </div>
-  </section>
-
-  <script>
     (() => {
       const SESSION_STORAGE_TOKEN_KEY = "openbrain.authToken";
       const state = {
@@ -1785,8 +13,6 @@ export function renderAppHtml(): string {
         askLoading: false,
         loginInProgress: false,
         lastAnswerRunId: "",
-        lastAskSceneSeed: null,
-        lastAskGraphSuggestion: null,
         pendingQuestion: "",
         awaitingClarification: false,
         briefChart: null,
@@ -1796,10 +22,7 @@ export function renderAppHtml(): string {
           miniMap: null,
           lastGraphPayload: null,
           includeWeak: false,
-          sceneMode: "default",
-          sceneSeed: null,
           selectedNodeId: "",
-          selectedEdgeId: "",
           expandedNodeIds: [],
           collapsedNodeIds: [],
           overflowState: {},
@@ -2050,7 +273,7 @@ export function renderAppHtml(): string {
         const profile = await api("/v1/brain/profile?chatNamespace=" + encodeURIComponent(state.chatNamespace) + "&timeframe=" + state.timeframe);
         const metrics = byId("briefMetrics");
         const domains = Array.isArray(profile.topDomains) ? profile.topDomains.slice(0, 6) : [];
-        metrics.innerHTML = domains.map((d) => \`<div class="metric"><span class="muted">\${d.domain}</span><b>\${Math.round(d.total || 0)}</b></div>\`).join("");
+        metrics.innerHTML = domains.map((d) => `<div class="metric"><span class="muted">${d.domain}</span><b>${Math.round(d.total || 0)}</b></div>`).join("");
 
         const chartPayload = await api("/v1/brain/insights?chatNamespace=" + encodeURIComponent(state.chatNamespace) + "&timeframe=" + state.timeframe);
         const chartData = pickChart(chartPayload, "brief-domain-weekly");
@@ -2081,12 +304,19 @@ export function renderAppHtml(): string {
       }
 
       const NETWORK_ZONE_SEQUENCE = ["people", "family", "friends", "groups", "threads", "time", "topics", "projects", "places", "events", "agents-tools"];
-      const NETWORK_ZONE_ANGLES = Object.fromEntries(
-        NETWORK_ZONE_SEQUENCE.map((zoneKey, index) => {
-          const angle = -90 + ((360 / NETWORK_ZONE_SEQUENCE.length) * index);
-          return [zoneKey, angle];
-        })
-      );
+      const NETWORK_ZONE_ANGLES = {
+        people: -92,
+        family: -52,
+        friends: -12,
+        groups: 26,
+        threads: 62,
+        time: 102,
+        topics: 146,
+        projects: 184,
+        places: 218,
+        events: 254,
+        "agents-tools": 300
+      };
       const NETWORK_ICON_MAP = {
         people: "people",
         family: "heart",
@@ -2110,34 +340,6 @@ export function renderAppHtml(): string {
         agents_tools: "tool",
         overflow: "overflow"
       };
-      const NETWORK_ICON_SCALES = {
-        people: 0.92,
-        heart: 0.88,
-        friend: 0.88,
-        groups: 0.9,
-        thread: 0.92,
-        topic: 0.86,
-        project: 0.9,
-        location: 0.82,
-        event: 0.84,
-        time: 0.8,
-        tool: 0.8,
-        overflow: 1
-      };
-      const NETWORK_ICON_OFFSETS = {
-        people: { x: 0, y: 2 },
-        heart: { x: 0, y: 2 },
-        friend: { x: 0, y: 2 },
-        groups: { x: 0, y: 2 },
-        thread: { x: 0, y: 1 },
-        topic: { x: 0, y: 0 },
-        project: { x: 0, y: 0 },
-        location: { x: 0, y: 2 },
-        event: { x: 0, y: 0 },
-        time: { x: 0, y: 2 },
-        tool: { x: 1, y: 1 },
-        overflow: { x: 0, y: 0 }
-      };
       const NETWORK_CATEGORY_TONES = {
         people: { fill: "#8fd4ff", stroke: "#4a98c8", text: "#17324a", glow: "rgba(143, 212, 255, 0.26)" },
         family: { fill: "#ffc4bc", stroke: "#e58b7f", text: "#17324a", glow: "rgba(255, 171, 160, 0.24)" },
@@ -2152,19 +354,14 @@ export function renderAppHtml(): string {
         "agents-tools": { fill: "#d9e3eb", stroke: "#8ea1b4", text: "#17324a", glow: "rgba(142, 161, 180, 0.16)" },
         overflow: { fill: "#ffffff", stroke: "#8ba6c0", text: "#214261", glow: "rgba(118, 154, 193, 0.18)" }
       };
-      const NETWORK_PERSON_ZONE_TONES = {
-        people: { fill: "#f5fbff", stroke: "#7aaed8", text: "#214261" },
-        family: { fill: "#fff4f1", stroke: "#dd8d83", text: "#5b3440" },
-        friends: { fill: "#f2fcf6", stroke: "#67ba8c", text: "#24463d" },
-        groups: { fill: "#f3fcfb", stroke: "#6ec8bd", text: "#204f4a" },
-        threads: { fill: "#f3f8ff", stroke: "#7ca8dd", text: "#294666" },
-        topics: { fill: "#fff8e8", stroke: "#ddb659", text: "#624913" },
-        projects: { fill: "#fff4e6", stroke: "#e7a650", text: "#624118" },
-        places: { fill: "#fff1ea", stroke: "#de8e6d", text: "#653a26" },
-        events: { fill: "#fff3f1", stroke: "#df8075", text: "#633732" },
-        time: { fill: "#f7fafe", stroke: "#95abbe", text: "#32485d" },
-        "agents-tools": { fill: "#f7f9fb", stroke: "#8ea1b4", text: "#3b4d60" }
-      };
+      const NETWORK_PERSON_PALETTE = [
+        { fill: "#eaf6ff", stroke: "#7aaed8", text: "#214261" },
+        { fill: "#eef8f1", stroke: "#75ba97", text: "#24463d" },
+        { fill: "#fff2e8", stroke: "#e2a16a", text: "#5a3a1d" },
+        { fill: "#f4efff", stroke: "#9c89d9", text: "#41315e" },
+        { fill: "#fff1f3", stroke: "#d98aa0", text: "#5f3240" },
+        { fill: "#f0f5ff", stroke: "#7f99da", text: "#2a3d68" }
+      ];
 
       function networkHash(value) {
         let hash = 0;
@@ -2181,7 +378,7 @@ export function renderAppHtml(): string {
           .replaceAll("&", "&amp;")
           .replaceAll("<", "&lt;")
           .replaceAll(">", "&gt;")
-          .replaceAll('"', "&quot;")
+          .replaceAll(""", "&quot;")
           .replaceAll("'", "&apos;");
       }
 
@@ -2190,7 +387,7 @@ export function renderAppHtml(): string {
       }
 
       function networkInitials(label) {
-        const parts = String(label || "").trim().split(/\s+/).filter(Boolean);
+        const parts = String(label || "").trim().split(/s+/).filter(Boolean);
         if (parts.length === 0) return "?";
         if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
         return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
@@ -2205,10 +402,9 @@ export function renderAppHtml(): string {
         return nodeType.replaceAll("_", "-");
       }
 
-      function networkToneForNode(node, zoneKeyOverride) {
-        const zoneKey = zoneKeyOverride || (node ? networkShellKey(node) : "people");
+      function networkToneForNode(node) {
         if (node.nodeType === "actor") {
-          return NETWORK_PERSON_ZONE_TONES[zoneKey] || NETWORK_PERSON_ZONE_TONES.people;
+          return NETWORK_PERSON_PALETTE[networkHash(node.id || node.label) % NETWORK_PERSON_PALETTE.length];
         }
         if (node.nodeType === "owner") {
           return { fill: "#f7fbff", stroke: "#88b5d8", text: "#17324a", glow: "rgba(143, 212, 255, 0.24)" };
@@ -2249,21 +445,15 @@ export function renderAppHtml(): string {
         }
       }
 
-      function networkScaledIconMarkup(iconKey, stroke, scale) {
-        const offset = NETWORK_ICON_OFFSETS[iconKey] || { x: 0, y: 0 };
-        return "<g transform='translate(" + offset.x + " " + offset.y + ") translate(44 44) scale(" + scale + ") translate(-44 -44)'>" + networkIconMarkup(iconKey, stroke) + "</g>";
-      }
-
       function networkShellSvg(node, tone, iconKey, size) {
         const halo = tone.glow || "rgba(110, 160, 210, 0.18)";
-        const iconScale = NETWORK_ICON_SCALES[iconKey] || 0.9;
         return networkSvgDataUrl(
           "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 88 88'>"
             + "<defs><filter id='g'><feGaussianBlur stdDeviation='6'/></filter></defs>"
-            + "<circle cx='44' cy='44' r='27' fill='" + halo + "' filter='url(%23g)'/>"
-            + "<circle cx='44' cy='44' r='22' fill='" + tone.fill + "' fill-opacity='0.72'/>"
-            + "<circle cx='44' cy='44' r='22' fill='none' stroke='" + tone.stroke + "' stroke-width='2.1'/>"
-            + networkScaledIconMarkup(iconKey, tone.stroke, iconScale)
+            + "<circle cx='44' cy='44' r='31' fill='" + halo + "' filter='url(%23g)'/>"
+            + "<circle cx='44' cy='44' r='28' fill='" + tone.fill + "' fill-opacity='0.78'/>"
+            + "<circle cx='44' cy='44' r='28' fill='none' stroke='" + tone.stroke + "' stroke-width='2.6'/>"
+            + networkIconMarkup(iconKey, tone.stroke)
           + "</svg>"
         );
       }
@@ -2273,23 +463,22 @@ export function renderAppHtml(): string {
         return networkSvgDataUrl(
           "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 88 88'>"
             + "<defs><filter id='g'><feGaussianBlur stdDeviation='5'/></filter></defs>"
-            + "<circle cx='44' cy='44' r='22' fill='rgba(122,174,216,0.1)' filter='url(%23g)'/>"
-            + "<circle cx='44' cy='44' r='19' fill='" + tone.fill + "'/>"
-            + "<circle cx='44' cy='44' r='19' fill='none' stroke='" + tone.stroke + "' stroke-width='2'/>"
-            + "<text x='44' y='48' text-anchor='middle' font-family='Segoe UI, sans-serif' font-size='17' font-weight='700' fill='" + tone.text + "'>" + initials + "</text>"
+            + "<circle cx='44' cy='44' r='28' fill='rgba(122,174,216,0.12)' filter='url(%23g)'/>"
+            + "<circle cx='44' cy='44' r='25' fill='" + tone.fill + "'/>"
+            + "<circle cx='44' cy='44' r='25' fill='none' stroke='" + tone.stroke + "' stroke-width='2.2'/>"
+            + "<text x='44' y='49' text-anchor='middle' font-family='Segoe UI, sans-serif' font-size='20' font-weight='700' fill='" + tone.text + "'>" + initials + "</text>"
           + "</svg>"
         );
       }
 
       function networkEntitySvg(node, tone, iconKey) {
-        const iconScale = (NETWORK_ICON_SCALES[iconKey] || 0.9) + 0.02;
         return networkSvgDataUrl(
           "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 88 88'>"
             + "<defs><filter id='g'><feGaussianBlur stdDeviation='4'/></filter></defs>"
-            + "<circle cx='44' cy='44' r='21' fill='" + (tone.glow || "rgba(118,154,193,0.12)") + "' filter='url(%23g)'/>"
-            + "<circle cx='44' cy='44' r='18.5' fill='#ffffff'/>"
-            + "<circle cx='44' cy='44' r='18.5' fill='none' stroke='" + tone.stroke + "' stroke-width='1.9'/>"
-            + networkScaledIconMarkup(iconKey, tone.stroke, iconScale)
+            + "<circle cx='44' cy='44' r='23' fill='" + (tone.glow || "rgba(118,154,193,0.14)") + "' filter='url(%23g)'/>"
+            + "<circle cx='44' cy='44' r='21' fill='#ffffff'/>"
+            + "<circle cx='44' cy='44' r='21' fill='none' stroke='" + tone.stroke + "' stroke-width='2'/>"
+            + networkIconMarkup(iconKey, tone.stroke)
           + "</svg>"
         );
       }
@@ -2313,10 +502,10 @@ export function renderAppHtml(): string {
         return networkSvgDataUrl(
           "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 88 88'>"
             + "<defs><filter id='g'><feGaussianBlur stdDeviation='4'/></filter></defs>"
-            + "<circle cx='44' cy='44' r='25' fill='" + (tone.glow || "rgba(118,154,193,0.18)") + "' filter='url(%23g)'/>"
-            + "<circle cx='44' cy='44' r='22' fill='#ffffff'/>"
-            + "<circle cx='44' cy='44' r='22' fill='none' stroke='" + tone.stroke + "' stroke-width='2.4'/>"
-            + "<text x='44' y='50' text-anchor='middle' font-family='Segoe UI, sans-serif' font-size='20' font-weight='700' fill='" + tone.text + "'>" + count + "</text>"
+            + "<circle cx='44' cy='44' r='20' fill='" + (tone.glow || "rgba(118,154,193,0.14)") + "' filter='url(%23g)'/>"
+            + "<circle cx='44' cy='44' r='18' fill='#ffffff'/>"
+            + "<circle cx='44' cy='44' r='18' fill='none' stroke='" + tone.stroke + "' stroke-width='1.8'/>"
+            + "<text x='44' y='49' text-anchor='middle' font-family='Segoe UI, sans-serif' font-size='16' font-weight='700' fill='" + tone.text + "'>" + count + "</text>"
           + "</svg>"
         );
       }
@@ -2362,147 +551,55 @@ export function renderAppHtml(): string {
         return memo[node.id];
       }
 
-      function networkPlaceOrbit(nodes, centerPoint, radiusStart, radiusStep, startAngle, endAngle, positions) {
-        if (!Array.isArray(nodes) || nodes.length === 0) return;
-        const perRing = 6;
-        nodes.forEach((node, index) => {
-          const ring = Math.floor(index / perRing);
-          const ringStart = ring * perRing;
-          const ringNodes = nodes.slice(ringStart, Math.min(nodes.length, ringStart + perRing));
-          const slot = index - ringStart;
-          const slots = ringNodes.length;
-          const angle = slots <= 1
-            ? (startAngle + endAngle) / 2
-            : startAngle + (((endAngle - startAngle) * slot) / Math.max(1, slots - 1));
-          const radius = radiusStart + (ring * radiusStep);
-          positions[node.id] = {
-            x: centerPoint.x + (Math.cos(angle) * radius),
-            y: centerPoint.y + (Math.sin(angle) * radius)
-          };
-        });
-      }
-
-      function networkComputePositions(nodes, edges, selectedId) {
+      function networkComputePositions(nodes, edges) {
         const host = byId("networkGraph");
         const rect = host.getBoundingClientRect();
-        const width = Math.max(920, Math.round(rect.width || 920));
-        const height = Math.max(720, Math.round(rect.height || 720));
+        const width = Math.max(880, Math.round(rect.width || 880));
+        const height = Math.max(700, Math.round(rect.height || 700));
         const center = { x: width / 2, y: height / 2 };
-        const shellRadius = Math.min(width, height) * 0.37;
+        const shellRadius = Math.min(width, height) * 0.29;
         const positions = {};
         const nodesById = new Map(nodes.map((node) => [node.id, node]));
         const zoneMemo = {};
         const zoneAnchors = {};
-        const adjacency = new Map();
-        const ownerNode = nodes.find((node) => node.nodeType === "owner");
-
-        edges.forEach((edge) => {
-          const left = adjacency.get(edge.source) || [];
-          left.push(edge.target);
-          adjacency.set(edge.source, left);
-          const right = adjacency.get(edge.target) || [];
-          right.push(edge.source);
-          adjacency.set(edge.target, right);
-        });
-
-        const placeShells = (radius) => {
-          NETWORK_ZONE_SEQUENCE.forEach((zoneKey) => {
-            const shellNode = nodes.find((node) => node.isShell && networkShellKey(node) === zoneKey);
-            if (!shellNode) return;
-            const angle = (NETWORK_ZONE_ANGLES[zoneKey] || 0) * Math.PI / 180;
-            const anchor = {
-              x: center.x + Math.cos(angle) * radius,
-              y: center.y + Math.sin(angle) * radius
-            };
-            zoneAnchors[zoneKey] = { angle, anchor };
-            if (!positions[shellNode.id]) positions[shellNode.id] = anchor;
-          });
-        };
-
-        const placeOverview = () => {
-          if (ownerNode) positions[ownerNode.id] = center;
-          placeShells(shellRadius);
-          NETWORK_ZONE_SEQUENCE.forEach((zoneKey) => {
-            const zoneNodes = nodes
-              .filter((node) => !node.isShell && node.nodeType !== "owner" && networkZoneForNode(node, edges, nodesById, zoneMemo) === zoneKey)
-              .sort((a, b) => Number(a.nodeType === "overflow") - Number(b.nodeType === "overflow") || b.strength - a.strength);
-            const zone = zoneAnchors[zoneKey];
-            if (!zone || zoneNodes.length === 0) return;
-            const outward = { x: Math.cos(zone.angle), y: Math.sin(zone.angle) };
-            const tangent = { x: -Math.sin(zone.angle), y: Math.cos(zone.angle) };
-            zoneNodes.forEach((node, index) => {
-              const ring = Math.floor(index / 5);
-              const slot = index % 5;
-              const slots = Math.min(5, zoneNodes.length - ring * 5);
-              const tangentOffset = slots === 1 ? 0 : (slot - (slots - 1) / 2) * 64;
-              const outwardDistance = 118 + (ring * 76);
-              positions[node.id] = {
-                x: zone.anchor.x + (outward.x * outwardDistance) + (tangent.x * tangentOffset),
-                y: zone.anchor.y + (outward.y * outwardDistance) + (tangent.y * tangentOffset)
-              };
-            });
-          });
-        };
-
-        const selectedNode = selectedId ? nodesById.get(selectedId) : null;
-        if (!selectedNode || selectedNode.nodeType === "owner") {
-          placeOverview();
-          return positions;
-        }
-
-        const ownerPos = selectedNode.isShell
-          ? { x: center.x - 136, y: center.y + 126 }
-          : { x: center.x - 148, y: center.y + 134 };
-        if (ownerNode) positions[ownerNode.id] = ownerPos;
-        placeShells(Math.min(width, height) * 0.4);
-
-        const selectedPos = selectedNode.isShell
-          ? { x: center.x + 22, y: center.y + 2 }
-          : { x: center.x + 24, y: center.y + 8 };
-        positions[selectedNode.id] = selectedPos;
-
-        const directNeighbors = (adjacency.get(selectedNode.id) || [])
-          .map((id) => nodesById.get(id))
-          .filter(Boolean)
-          .sort((a, b) => Number(a.nodeType === "overflow") - Number(b.nodeType === "overflow") || b.strength - a.strength);
-
-        if (selectedNode.isShell) {
-          const orbitNodes = directNeighbors.filter((node) => !node.isShell && node.nodeType !== "owner");
-          const overflowNodes = orbitNodes.filter((node) => node.nodeType === "overflow");
-          const regularNodes = orbitNodes.filter((node) => node.nodeType !== "overflow");
-          const ownerAngle = Math.atan2(ownerPos.y - selectedPos.y, ownerPos.x - selectedPos.x);
-          networkPlaceOrbit(regularNodes, selectedPos, 224, 96, ownerAngle + 0.64, ownerAngle + (Math.PI * 2) - 0.64, positions);
-          networkPlaceOrbit(overflowNodes, selectedPos, 308, 32, ownerAngle + 0.96, ownerAngle + 1.24, positions);
-        } else {
-          const shellNeighbor = directNeighbors.find((node) => node.isShell);
-          if (shellNeighbor) {
-            positions[shellNeighbor.id] = { x: selectedPos.x - 210, y: selectedPos.y - 144 };
-          }
-          const orbitNodes = directNeighbors.filter((node) => node.id !== shellNeighbor?.id && node.nodeType !== "owner");
-          const overflowNodes = orbitNodes.filter((node) => node.nodeType === "overflow");
-          const regularNodes = orbitNodes.filter((node) => node.nodeType !== "overflow");
-          const ownerAngle = Math.atan2(ownerPos.y - selectedPos.y, ownerPos.x - selectedPos.x);
-          networkPlaceOrbit(regularNodes, selectedPos, 210, 82, ownerAngle + 0.66, ownerAngle + (Math.PI * 2) - 0.66, positions);
-          networkPlaceOrbit(overflowNodes, selectedPos, 298, 26, ownerAngle + 0.9, ownerAngle + 1.16, positions);
-        }
-
-        NETWORK_ZONE_SEQUENCE.forEach((zoneKey) => {
-          const zone = zoneAnchors[zoneKey];
-          if (!zone) return;
-          const zoneNodes = nodes
-            .filter((node) => !positions[node.id] && networkZoneForNode(node, edges, nodesById, zoneMemo) === zoneKey)
-            .sort((a, b) => Number(a.nodeType === "overflow") - Number(b.nodeType === "overflow") || b.strength - a.strength);
-          if (zoneNodes.length === 0) return;
-          networkPlaceOrbit(zoneNodes, zone.anchor, 116, 56, zone.angle - 0.48, zone.angle + 0.48, positions);
-        });
 
         nodes.forEach((node) => {
-          if (!positions[node.id]) {
-            positions[node.id] = {
-              x: center.x + ((Math.random() * 60) - 30),
-              y: center.y + ((Math.random() * 60) - 30)
-            };
+          if (node.nodeType === "owner") {
+            positions[node.id] = center;
           }
+        });
+
+        NETWORK_ZONE_SEQUENCE.forEach((zoneKey) => {
+          const shellNode = nodes.find((node) => node.isShell && networkShellKey(node) === zoneKey);
+          if (!shellNode) return;
+          const angle = (NETWORK_ZONE_ANGLES[zoneKey] || 0) * Math.PI / 180;
+          const anchor = {
+            x: center.x + Math.cos(angle) * shellRadius,
+            y: center.y + Math.sin(angle) * shellRadius
+          };
+          zoneAnchors[zoneKey] = { angle, anchor };
+          positions[shellNode.id] = anchor;
+        });
+
+        NETWORK_ZONE_SEQUENCE.forEach((zoneKey) => {
+          const zoneNodes = nodes
+            .filter((node) => !node.isShell && node.nodeType !== "owner" && networkZoneForNode(node, edges, nodesById, zoneMemo) === zoneKey)
+            .sort((a, b) => Number(a.nodeType === "overflow") - Number(b.nodeType === "overflow") || b.strength - a.strength);
+          const zone = zoneAnchors[zoneKey];
+          if (!zone || zoneNodes.length === 0) return;
+          const outward = { x: Math.cos(zone.angle), y: Math.sin(zone.angle) };
+          const tangent = { x: -Math.sin(zone.angle), y: Math.cos(zone.angle) };
+          zoneNodes.forEach((node, index) => {
+            const ring = Math.floor(index / 6);
+            const slot = index % 6;
+            const slots = Math.min(6, zoneNodes.length - ring * 6);
+            const tangentOffset = slots === 1 ? 0 : (slot - (slots - 1) / 2) * 54;
+            const outwardDistance = 118 + (ring * 70);
+            positions[node.id] = {
+              x: zone.anchor.x + (outward.x * outwardDistance) + (tangent.x * tangentOffset),
+              y: zone.anchor.y + (outward.y * outwardDistance) + (tangent.y * tangentOffset)
+            };
+          });
         });
 
         return positions;
@@ -2546,7 +643,6 @@ export function renderAppHtml(): string {
         if (!state.network.graph) return;
         const cy = state.network.graph;
         cy.elements().removeClass("faded focus-edge focus-node");
-        if (state.network.sceneMode === "answer_scene") return;
         if (!nodeId) return;
         const node = cy.getElementById(nodeId);
         if (!node || node.empty()) return;
@@ -2635,10 +731,7 @@ export function renderAppHtml(): string {
         byId("networkSavedViews").querySelectorAll("button").forEach((btn) => {
           btn.addEventListener("click", async () => {
             state.network.queryText = "";
-            state.network.sceneMode = "default";
-            state.network.sceneSeed = null;
             state.network.selectedNodeId = "";
-            state.network.selectedEdgeId = "";
             state.network.expandedNodeIds = [];
             state.network.collapsedNodeIds = [];
             state.network.overflowState = {};
@@ -2648,10 +741,7 @@ export function renderAppHtml(): string {
         byId("networkSnapshots").querySelectorAll("button").forEach((btn) => {
           btn.addEventListener("click", async () => {
             state.network.queryText = "";
-            state.network.sceneMode = "default";
-            state.network.sceneSeed = null;
             state.network.selectedNodeId = "";
-            state.network.selectedEdgeId = "";
             state.network.expandedNodeIds = [];
             state.network.collapsedNodeIds = [];
             state.network.overflowState = {};
@@ -2660,115 +750,15 @@ export function renderAppHtml(): string {
         });
       }
 
-      function renderNetworkEvidencePanel(payload) {
-        const subtitle = byId("networkEvidenceSubtitle");
-        const host = byId("networkEvidenceList");
-        if (payload && payload.evidencePanel && typeof payload.evidencePanel === "object") {
-          const panel = payload.evidencePanel;
-          const items = Array.isArray(panel.items) ? panel.items : [];
-          subtitle.textContent = String(panel.subtitle || "Supporting evidence.");
-          host.innerHTML = items.length === 0
-            ? '<div class="network-muted">No supporting evidence is loaded for this selection yet.</div>'
-            : items.map((item) => {
-                const meta = [
-                  item.kind ? String(item.kind).replaceAll("_", " ") : "",
-                  item.actorName,
-                  item.conversationLabel,
-                  item.sourceSystem,
-                  item.sourceTimestamp
-                ].filter(Boolean);
-                const before = Array.isArray(item.contextBefore) && item.contextBefore.length > 0
-                  ? '<div class="network-evidence-context">' + item.contextBefore.map((line) => '<div>' + escapeHtml(String(line)) + '</div>').join("") + '</div>'
-                  : "";
-                const after = Array.isArray(item.contextAfter) && item.contextAfter.length > 0
-                  ? '<div class="network-evidence-context">' + item.contextAfter.map((line) => '<div>' + escapeHtml(String(line)) + '</div>').join("") + '</div>'
-                  : "";
-                return '<div class="network-evidence-item">'
-                  + '<div style="font-weight:700; color:#17324a;">' + escapeHtml(String(item.title || "")) + '</div>'
-                  + '<div class="network-evidence-meta">' + meta.map((part) => '<span>' + escapeHtml(String(part)) + '</span>').join("") + '</div>'
-                  + before
-                  + '<div style="line-height:1.55; white-space:pre-wrap; font-weight:600;">' + escapeHtml(String(item.excerpt || "")) + '</div>'
-                  + after
-                  + '</div>';
-              }).join("");
-          return;
-        }
-        const nodes = Array.isArray(payload?.graph?.nodes) ? payload.graph.nodes : [];
-        const edges = Array.isArray(payload?.graph?.edges) ? payload.graph.edges : [];
-        const selectedId = String(payload?.graph?.selectedNodeId || "");
-        const selectedNode = nodes.find((node) => node.id === selectedId);
-        if (!selectedNode || selectedNode.nodeType === "owner") {
-          subtitle.textContent = "Select a leaf node to read the supporting thread or evidence.";
-          host.innerHTML = '<div class="network-muted">No evidence selected yet.</div>';
-          return;
-        }
-        const items = [];
-        const pushEvidence = (title, evidence) => {
-          if (!evidence || !String(evidence.excerpt || "").trim()) return;
-          items.push({
-            title,
-            excerpt: String(evidence.excerpt || "").trim(),
-            kind: String(evidence.kind || ""),
-            sourceSystem: String(evidence.sourceSystem || ""),
-            sourceTimestamp: String(evidence.sourceTimestamp || ""),
-            actorName: String(evidence.actorName || ""),
-            conversationLabel: String(evidence.conversationLabel || "")
-          });
-        };
-        (selectedNode.evidenceSummary || []).forEach((evidence) => pushEvidence(selectedNode.displayLabel, evidence));
-        edges
-          .filter((edge) => edge.source === selectedId || edge.target === selectedId)
-          .slice(0, 8)
-          .forEach((edge) => {
-            (edge.evidenceSummary || []).forEach((evidence) => pushEvidence(edge.label, evidence));
-          });
-        const deduped = [];
-        const seen = new Set();
-        for (const item of items) {
-          const key = [item.title, item.excerpt, item.sourceTimestamp, item.conversationLabel].join("||");
-          if (seen.has(key)) continue;
-          seen.add(key);
-          deduped.push(item);
-        }
-        subtitle.textContent = "Full evidence and thread context for " + String(selectedNode.displayLabel || selectedNode.label || "this node") + ".";
-        host.innerHTML = deduped.length === 0
-          ? '<div class="network-muted">No supporting evidence is loaded for this node yet.</div>'
-          : deduped.slice(0, 12).map((item) => {
-              const meta = [
-                item.kind ? item.kind.replaceAll("_", " ") : "",
-                item.actorName,
-                item.conversationLabel,
-                item.sourceSystem,
-                item.sourceTimestamp
-              ].filter(Boolean);
-              return '<div class="network-evidence-item">'
-                + '<div style="font-weight:700; color:#17324a;">' + escapeHtml(item.title) + '</div>'
-                + '<div class="network-evidence-meta">' + meta.map((part) => '<span>' + escapeHtml(String(part)) + '</span>').join("") + '</div>'
-                + '<div style="line-height:1.55; white-space:pre-wrap;">' + escapeHtml(item.excerpt) + '</div>'
-                + '</div>';
-            }).join("");
-      }
-
       function renderNetworkGraph(payload) {
         state.network.lastGraphPayload = payload;
-        state.network.sceneMode = String(payload?.sceneMode || state.network.sceneMode || "default");
         const nodes = Array.isArray(payload?.graph?.nodes) ? payload.graph.nodes : [];
         const edges = Array.isArray(payload?.graph?.edges) ? payload.graph.edges : [];
         const nodesById = new Map(nodes.map((node) => [node.id, node]));
-        const adjacency = new Map();
-        edges.forEach((edge) => {
-          const left = adjacency.get(edge.source) || [];
-          left.push(edge.target);
-          adjacency.set(edge.source, left);
-          const right = adjacency.get(edge.target) || [];
-          right.push(edge.source);
-          adjacency.set(edge.target, right);
-        });
         const zoneMemo = {};
         const zonePriority = new Map(NETWORK_ZONE_SEQUENCE.map((zone, index) => [zone, index]));
         const labelsByZone = new Map();
         const selectedId = String(payload?.graph?.selectedNodeId || state.network.selectedNodeId || "");
-        const selectedNode = selectedId ? nodesById.get(selectedId) : null;
         nodes.forEach((node) => {
           const zoneKey = networkZoneForNode(node, edges, nodesById, zoneMemo);
           const bucket = labelsByZone.get(zoneKey) || [];
@@ -2780,48 +770,38 @@ export function renderAppHtml(): string {
             .filter((node) => node.isShell || node.nodeType === "owner" || node.nodeType === "overflow")
             .map((node) => node.id)
         );
-        if (selectedNode && selectedNode.nodeType !== "owner") {
-          const directLabels = (adjacency.get(selectedId) || [])
-            .map((id) => nodesById.get(id))
-            .filter(Boolean)
-            .filter((node) => node.nodeType !== "owner")
-            .sort((a, b) => Number(a.nodeType === "overflow") - Number(b.nodeType === "overflow") || b.strength - a.strength)
-            .slice(0, selectedNode.isShell ? 10 : 8);
-          directLabels.forEach((node) => visibleLabelIds.add(node.id));
-        } else {
-          labelsByZone.forEach((bucket) => {
-            bucket
-              .sort((a, b) => b.strength - a.strength)
-              .slice(0, 2)
-              .forEach((node) => visibleLabelIds.add(node.id));
-          });
-        }
+        labelsByZone.forEach((bucket) => {
+          bucket
+            .sort((a, b) => b.strength - a.strength)
+            .slice(0, 2)
+            .forEach((node) => visibleLabelIds.add(node.id));
+        });
         if (selectedId) visibleLabelIds.add(selectedId);
 
-        const positions = networkComputePositions(nodes, edges, selectedId);
+        const positions = networkComputePositions(nodes, edges);
         const cyElements = [
           ...nodes.map((node) => {
+            const tone = networkToneForNode(node);
             const zoneKey = networkZoneForNode(node, edges, nodesById, zoneMemo);
-            const tone = networkToneForNode(node, zoneKey);
             const iconKey = NETWORK_ICON_MAP[node.isShell ? networkShellKey(node) : node.nodeType] || "topic";
             const size = node.nodeType === "owner"
-              ? 104
+              ? 118
               : node.isShell
-                ? 84
+                ? 92
                 : node.nodeType === "actor"
-                  ? 62
+                  ? 72
                   : node.nodeType === "overflow"
-                    ? 72
+                    ? 46
                     : 58;
             const image = node.nodeType === "owner"
               ? networkRootSvg()
-              : node.isShell
-                ? networkShellSvg(node, tone, iconKey, size)
               : node.nodeType === "actor"
                 ? networkPersonSvg(node, tone)
-              : node.nodeType === "overflow"
+                : node.nodeType === "overflow"
                   ? networkOverflowSvg(node, tone)
-                  : networkEntitySvg(node, tone, iconKey);
+                  : node.isShell
+                    ? networkShellSvg(node, tone, iconKey, size)
+                    : networkEntitySvg(node, tone, iconKey);
             return {
               data: {
                 id: node.id,
@@ -2844,7 +824,7 @@ export function renderAppHtml(): string {
             const tone = NETWORK_CATEGORY_TONES[sourceZone] || NETWORK_CATEGORY_TONES.people;
             const isFocused = selectedId && (edge.source === selectedId || edge.target === selectedId);
             const edgeLabel = isFocused && edge.edgeType !== "belongs_to_category" && edge.edgeType !== "overflow"
-              ? ""
+              ? String(edge.label || "").replaceAll("_", " ")
               : "";
             return {
               data: {
@@ -2868,14 +848,10 @@ export function renderAppHtml(): string {
               "font-size": 12,
               "font-weight": 600,
               "text-wrap": "wrap",
-              "text-max-width": 124,
+              "text-max-width": 120,
               "text-valign": "bottom",
               "text-halign": "center",
-              "text-margin-y": 10,
-              "text-background-opacity": 0.9,
-              "text-background-color": "#f9fcff",
-              "text-background-shape": "roundrectangle",
-              "text-background-padding": "2px",
+              "text-margin-y": 12,
               width: "data(nodeSize)",
               height: "data(nodeSize)",
               shape: "ellipse",
@@ -2883,26 +859,23 @@ export function renderAppHtml(): string {
               "border-width": 0,
               "background-image": "data(bgImage)",
               "background-fit": "contain",
-              "background-repeat": "no-repeat",
-              "overlay-opacity": 0
+              "background-repeat": "no-repeat"
             }
           },
           {
             selector: 'node[nodeType = "overflow"]',
             style: {
               "text-margin-y": 0,
-              label: "",
-              "z-index-compare": "manual",
-              "z-index": 999
+              label: ""
             }
           },
           {
             selector: "edge",
             style: {
-              width: "mapData(strength, 0, 1, 0.5, 1.35)",
-              "line-color": "#cfdae5",
+              width: "mapData(strength, 0, 1, 1.1, 3.2)",
+              "line-color": "#c8d7e4",
               "curve-style": "bezier",
-              opacity: 0.28,
+              opacity: 0.52,
               "target-arrow-shape": "none",
               label: "data(edgeLabel)",
               color: "#7f95ab",
@@ -2915,18 +888,18 @@ export function renderAppHtml(): string {
             selector: 'edge[edgeType = "belongs_to_category"]',
             style: {
               "line-style": "solid",
-              opacity: 0.28
+              opacity: 0.34
             }
           },
           {
             selector: 'edge[edgeType = "overflow"]',
             style: {
               "line-style": "dashed",
-              opacity: 0.28
+              opacity: 0.46
             }
           },
-          { selector: ".faded", style: { opacity: 0.015 } },
-          { selector: ".focus-edge", style: { opacity: 0.62, width: 1.9, "line-color": "#92a9bd" } },
+          { selector: ".faded", style: { opacity: 0.08 } },
+          { selector: ".focus-edge", style: { opacity: 0.88, width: 3.8, "line-color": "#92aec7" } },
           { selector: ".focus-node", style: { opacity: 1 } },
           { selector: ":selected", style: { "overlay-opacity": 0, opacity: 1 } }
         ];
@@ -2935,31 +908,13 @@ export function renderAppHtml(): string {
           container: byId("networkGraph"),
           elements: cyElements,
           style,
-          layout: { name: "preset", fit: true, padding: 68 },
-          autounselectify: true,
-          boxSelectionEnabled: false
+          layout: { name: "preset", fit: true, padding: 44 }
         });
         const layout = state.network.graph.layout(networkLayoutConfig(positions));
         layout.run();
         state.network.graph.on("tap", "node", async (event) => {
           const nodeId = event.target.id();
           const node = (state.network.lastGraphPayload?.graph?.nodes || []).find((item) => item.id === nodeId);
-          if (node && node.nodeType === "owner") {
-            if (state.network.sceneMode === "answer_scene") {
-              state.network.selectedNodeId = nodeId;
-              state.network.selectedEdgeId = "";
-              await loadNetworkGraph();
-              return;
-            }
-            state.network.queryText = "";
-            state.network.selectedNodeId = "";
-            state.network.selectedEdgeId = "";
-            state.network.expandedNodeIds = [];
-            state.network.collapsedNodeIds = [];
-            state.network.overflowState = {};
-            await loadNetworkGraph({ command: "collapse all" });
-            return;
-          }
           if (node && node.nodeType === "overflow") {
             const targetId = String(node.metadata?.overflowForNodeId || "");
             if (targetId) {
@@ -2970,18 +925,8 @@ export function renderAppHtml(): string {
             return;
           }
           state.network.selectedNodeId = nodeId;
-          state.network.selectedEdgeId = "";
-          if (state.network.sceneMode === "answer_scene") {
-            await loadNetworkGraph();
-            return;
-          }
-          state.network.collapsedNodeIds = state.network.collapsedNodeIds.filter((id) => id !== nodeId);
           if (!state.network.expandedNodeIds.includes(nodeId)) state.network.expandedNodeIds.push(nodeId);
-          await loadNetworkGraph();
-        });
-        state.network.graph.on("tap", "edge", async (event) => {
-          if (state.network.sceneMode !== "answer_scene") return;
-          state.network.selectedEdgeId = event.target.id();
+          applyNetworkFocus(nodeId);
           await loadNetworkGraph();
         });
         state.network.graph.on("mouseover", "node", (event) => {
@@ -3012,16 +957,7 @@ export function renderAppHtml(): string {
           ],
           layout: { ...networkLayoutConfig(positions), animate: false }
         });
-        if (selectedId) {
-          const selectedCollection = state.network.graph.getElementById(selectedId).closedNeighborhood();
-          const ownerCollection = state.network.graph.nodes().filter((node) => node.data("nodeType") === "owner");
-          const fitCollection = ownerCollection && !ownerCollection.empty()
-            ? selectedCollection.union(ownerCollection)
-            : selectedCollection;
-          state.network.graph.fit(fitCollection, 56);
-        } else {
-          state.network.graph.fit(undefined, 48);
-        }
+        state.network.graph.fit(undefined, 32);
         state.network.miniMap.fit(undefined, 18);
       }
 
@@ -3037,10 +973,7 @@ export function renderAppHtml(): string {
             chatNamespace: state.chatNamespace,
             limit: 220,
             query: useSavedArtifact ? undefined : (state.network.queryText || undefined),
-            sceneMode: useSavedArtifact ? undefined : state.network.sceneMode,
-            sceneSeed: useSavedArtifact ? undefined : state.network.sceneSeed,
             selectedNodeId: useSavedArtifact ? undefined : (state.network.selectedNodeId || undefined),
-            selectedEdgeId: useSavedArtifact ? undefined : (state.network.selectedEdgeId || undefined),
             expandedNodeIds: useSavedArtifact ? undefined : state.network.expandedNodeIds,
             collapsedNodeIds: useSavedArtifact ? undefined : state.network.collapsedNodeIds,
             overflowState: useSavedArtifact ? undefined : state.network.overflowState,
@@ -3053,11 +986,9 @@ export function renderAppHtml(): string {
           })
         });
         state.network.selectedNodeId = String(payload?.graph?.selectedNodeId || state.network.selectedNodeId || "");
-        state.network.selectedEdgeId = String(payload?.graph?.selectedEdgeId || state.network.selectedEdgeId || "");
         renderNetworkGraph(payload);
         renderNetworkDetail(payload.detailPanel);
-        renderNetworkEvidencePanel(payload);
-        renderNetworkSuggestions([...(Array.isArray(payload.sceneActions) ? payload.sceneActions : []), ...(Array.isArray(payload.commandSuggestions) ? payload.commandSuggestions : [])]);
+        renderNetworkSuggestions(payload.commandSuggestions);
         renderNetworkSavedLists(payload);
         hideNetworkHoverCard();
         byId("networkAnswerSummary").textContent = String(payload.answerSummary || "Network updated.");
@@ -3077,16 +1008,8 @@ export function renderAppHtml(): string {
         appendNetworkBubble("user", text);
         const lower = text.toLowerCase();
         if (lower === "collapse all") {
-          if (state.network.sceneMode === "answer_scene") {
-            state.network.selectedNodeId = "";
-            state.network.selectedEdgeId = "";
-            await loadNetworkGraph();
-            appendNetworkBubble("agent", "Reset the scene selection.");
-            return;
-          }
           state.network.queryText = "";
           state.network.selectedNodeId = "";
-          state.network.selectedEdgeId = "";
           state.network.expandedNodeIds = [];
           state.network.collapsedNodeIds = [];
           state.network.overflowState = {};
@@ -3095,13 +1018,6 @@ export function renderAppHtml(): string {
           return;
         }
         if (lower.startsWith("collapse ")) {
-          if (state.network.sceneMode === "answer_scene") {
-            state.network.selectedNodeId = "";
-            state.network.selectedEdgeId = "";
-            await loadNetworkGraph();
-            appendNetworkBubble("agent", "Collapsed the active scene selection.");
-            return;
-          }
           const target = text.slice("collapse ".length).trim().toLowerCase();
           const payloadNodes = Array.isArray(state.network.lastGraphPayload?.graph?.nodes) ? state.network.lastGraphPayload.graph.nodes : [];
           const match = payloadNodes.find((node) => String(node.displayLabel || node.label || "").toLowerCase() === target);
@@ -3120,12 +1036,6 @@ export function renderAppHtml(): string {
           const match = payloadNodes.find((node) => String(node.displayLabel || node.label || "").toLowerCase() === target);
           if (match) {
             state.network.selectedNodeId = match.id;
-            state.network.selectedEdgeId = "";
-            if (state.network.sceneMode === "answer_scene") {
-              await loadNetworkGraph();
-              appendNetworkBubble("agent", "Focused " + (match.displayLabel || match.label) + ".");
-              return;
-            }
             state.network.collapsedNodeIds = state.network.collapsedNodeIds.filter((id) => id !== match.id);
             if (!state.network.expandedNodeIds.includes(match.id)) state.network.expandedNodeIds.push(match.id);
             await loadNetworkGraph();
@@ -3143,34 +1053,6 @@ export function renderAppHtml(): string {
           state.network.includeWeak = true;
           await loadNetworkGraph();
           appendNetworkBubble("agent", "Weak-confidence nodes are now visible.");
-          return;
-        }
-        if (lower === "open evidence") {
-          byId("networkEvidenceList").scrollIntoView({ behavior: "smooth", block: "nearest" });
-          appendNetworkBubble("agent", "Opened the evidence reader for the current selection.");
-          return;
-        }
-        if (lower === "see related chat") {
-          const payloadNodes = Array.isArray(state.network.lastGraphPayload?.graph?.nodes) ? state.network.lastGraphPayload.graph.nodes : [];
-          const match = payloadNodes.find((node) => node.nodeType === "group_chat");
-          if (match) {
-            state.network.selectedNodeId = match.id;
-            state.network.selectedEdgeId = "";
-            await loadNetworkGraph();
-            appendNetworkBubble("agent", "Focused the related conversation.");
-            return;
-          }
-        }
-        if (lower === "see earlier mentions" && state.network.sceneMode === "answer_scene" && state.network.sceneSeed?.question) {
-          const draft = "Show the earlier mentions related to: " + state.network.sceneSeed.question;
-          switchModule("ask");
-          byId("askChatInput").value = draft;
-          byId("globalQuestion").value = draft;
-          byId("askChatNote").textContent = "Question drafted from the current graph scene. Edit it or send it to continue.";
-          return;
-        }
-        if (state.network.sceneMode === "answer_scene") {
-          appendNetworkBubble("agent", "Use Ask for a new memory question. Graph follow-up chat is planned next.");
           return;
         }
         state.network.queryText = text;
@@ -3301,9 +1183,9 @@ export function renderAppHtml(): string {
         }
         list.innerHTML = rows.slice(0, 80).map((item) => {
           const chips = Array.isArray(item.domains) && item.domains.length > 0
-            ? item.domains.map((d) => \`<span class="timeline-chip">\${d}</span>\`).join("")
-            : \`<span class="timeline-chip">\${item.domain}</span>\`;
-          return \`<div class="timeline-item"><div>\${chips}<span class="muted">\${fmtDate(item.sourceTimestamp)}</span></div><div>\${item.text}</div></div>\`;
+            ? item.domains.map((d) => `<span class="timeline-chip">${d}</span>`).join("")
+            : `<span class="timeline-chip">${item.domain}</span>`;
+          return `<div class="timeline-item"><div>${chips}<span class="muted">${fmtDate(item.sourceTimestamp)}</span></div><div>${item.text}</div></div>`;
         }).join("");
       }
 
@@ -3315,7 +1197,7 @@ export function renderAppHtml(): string {
           ? '<div class="muted">No insight snapshots yet.</div>'
           : rows.map((r) => {
               const action = r.action ? '<p><b>Action:</b> ' + r.action + '</p>' : '';
-              return \`<div class="panel" style="margin:8px 0;"><h4>\${r.title}</h4><div class="muted">confidence: \${Math.round((r.confidence || 0) * 100)}%</div><p>\${r.summary}</p>\${action}</div>\`;
+              return `<div class="panel" style="margin:8px 0;"><h4>${r.title}</h4><div class="muted">confidence: ${Math.round((r.confidence || 0) * 100)}%</div><p>${r.summary}</p>${action}</div>`;
             }).join("");
       }
 
@@ -3325,7 +1207,7 @@ export function renderAppHtml(): string {
         const el = byId("opsJobs");
         el.innerHTML = jobs.length === 0
           ? "No jobs."
-          : jobs.map((j) => \`<div style="padding:6px 0;border-bottom:1px solid #1f3b60;">\${j.jobType} - \${j.status} - queued \${j.queuedItems} - done \${j.processedItems} - failed \${j.failedItems}</div>\`).join("");
+          : jobs.map((j) => `<div style="padding:6px 0;border-bottom:1px solid #1f3b60;">${j.jobType} - ${j.status} - queued ${j.queuedItems} - done ${j.processedItems} - failed ${j.failedItems}</div>`).join("");
       }
 
       async function loadAskDebug(answerRunId) {
@@ -3342,14 +1224,14 @@ export function renderAppHtml(): string {
         const prettyJson = (value) => {
           const raw = JSON.stringify(value ?? {}, null, 2);
           if (raw.length <= 12000) return raw;
-          return raw.slice(0, 12000) + "\\n... (truncated)";
+          return raw.slice(0, 12000) + "\n... (truncated)";
         };
         const connectorRow = (fromIdx, toIdx, laneCount, columnsStyle) => {
           const cells = [];
           if (fromIdx === toIdx) {
             for (let idx = 0; idx < laneCount; idx += 1) {
               if (idx === fromIdx) {
-                cells.push('<div class="ask-debug-connector-cell"><pre class="ask-debug-arrow">|\\nv</pre></div>');
+                cells.push('<div class="ask-debug-connector-cell"><pre class="ask-debug-arrow">|\nv</pre></div>');
               } else {
                 cells.push('<div class="ask-debug-connector-cell"></div>');
               }
@@ -3447,7 +1329,7 @@ export function renderAppHtml(): string {
         lanes.forEach((lane, idx) => laneIndex.set(lane, idx));
         const columnsStyle = 'repeat(' + lanes.length + ', minmax(220px, 1fr))';
         byId("askDebugSummary").innerHTML =
-          \`Run <b>\${escapeHtml(run.id || answerRunId)}</b> | status <b>\${escapeHtml(run.status || "n/a")}</b> | decision <b>\${escapeHtml(run.decision || "n/a")}</b> | started \${escapeHtml(fmtDate(run.created_at))} | lanes <b>\${lanes.length}</b> | events <b>\${events.length}</b>\`;
+          `Run <b>${escapeHtml(run.id || answerRunId)}</b> | status <b>${escapeHtml(run.status || "n/a")}</b> | decision <b>${escapeHtml(run.decision || "n/a")}</b> | started ${escapeHtml(fmtDate(run.created_at))} | lanes <b>${lanes.length}</b> | events <b>${events.length}</b>`;
         byId("askDebugFlow").innerHTML = events.length === 0
           ? "No debug steps recorded."
           : (() => {
@@ -3493,37 +1375,6 @@ export function renderAppHtml(): string {
         thread.scrollTop = thread.scrollHeight;
       }
 
-      function renderAskGraphSuggestion(payload) {
-        const wrap = byId("askGraphSuggestion");
-        const text = byId("askGraphSuggestionText");
-        const button = byId("askShowGraphButton");
-        const graphable = Boolean(payload && payload.graphable && payload.sceneSeed);
-        if (!graphable) {
-          wrap.classList.add("hidden");
-          text.textContent = "";
-          return;
-        }
-        const suggestion = payload.graphSuggestion && typeof payload.graphSuggestion === "object"
-          ? payload.graphSuggestion
-          : null;
-        text.textContent = String(suggestion?.prompt || "See this answer in graph mode.");
-        button.textContent = String(suggestion?.ctaLabel || "Show graph");
-        wrap.classList.remove("hidden");
-      }
-
-      async function openAskSceneInNetwork() {
-        if (!state.lastAskSceneSeed) return;
-        state.network.sceneMode = "answer_scene";
-        state.network.sceneSeed = state.lastAskSceneSeed;
-        state.network.queryText = "";
-        state.network.selectedNodeId = "";
-        state.network.selectedEdgeId = "";
-        state.network.expandedNodeIds = [];
-        state.network.collapsedNodeIds = [];
-        state.network.overflowState = {};
-        switchModule("network");
-      }
-
       function renderAskAnswerContract(answerPayload) {
         if (!answerPayload || typeof answerPayload !== "object") {
           byId("askAnswer").textContent = "No answer contract returned.";
@@ -3534,22 +1385,35 @@ export function renderAppHtml(): string {
         const finalAnswer = answerPayload.finalAnswer && typeof answerPayload.finalAnswer === "object"
           ? answerPayload.finalAnswer
           : null;
-        const blocks = [];
+        const intentSummary = answerPayload.intentSummary ? String(answerPayload.intentSummary) : "No intent summary.";
+        const checks = Array.isArray(answerPayload.constraintChecks) ? answerPayload.constraintChecks : [];
+        const assumptions = Array.isArray(answerPayload.assumptionsUsed) ? answerPayload.assumptionsUsed : [];
+
+        const blocks = [
+          "Decision: " + decision,
+          "Status: " + status,
+          "Intent: " + intentSummary
+        ];
         if (decision === "clarify_first") {
-          blocks.push(String(answerPayload.clarificationQuestion || "Please clarify the scope so I can answer accurately."));
+          blocks.push("Clarification needed: " + String(answerPayload.clarificationQuestion || "Please clarify scope."));
         } else if (finalAnswer) {
-          blocks.push(String(finalAnswer.direct || finalAnswer.estimate || "No grounded answer yet."));
-          if (status === "partial" || status === "estimated") {
-            blocks.push("Confidence: " + String(finalAnswer.confidence || "low"));
-          }
-          if (finalAnswer.contradictionCallout) blocks.push(String(finalAnswer.contradictionCallout));
-          if (finalAnswer.estimate && finalAnswer.estimate !== finalAnswer.direct) {
-            blocks.push("Evidence summary: " + String(finalAnswer.estimate));
-          }
-        } else if (status === "insufficient") {
-          blocks.push("I do not have enough grounded evidence to answer that confidently yet.");
+          blocks.push("Direct: " + String(finalAnswer.direct || "No definitive direct value found."));
+          if (finalAnswer.estimate) blocks.push("Estimate: " + String(finalAnswer.estimate));
+          if (finalAnswer.contradictionCallout) blocks.push("Contradictions: " + String(finalAnswer.contradictionCallout));
+          blocks.push("Confidence: " + String(finalAnswer.confidence || "low"));
+          blocks.push("Definitive next data: " + String(finalAnswer.definitiveNextData || "Provide explicit timestamped evidence."));
         }
-        byId("askAnswer").textContent = blocks.join("\\n\\n");
+        if (assumptions.length > 0) {
+          blocks.push("Assumptions: " + assumptions.map((a) => String(a)).join(" | "));
+        }
+        if (checks.length > 0) {
+          const lines = checks.slice(0, 6).map((c) => {
+            const ok = c && c.passed ? "pass" : "fail";
+            return "[" + ok + "] " + String(c?.name || "check") + " - " + String(c?.note || "");
+          });
+          blocks.push("Constraint checks: " + lines.join(" | "));
+        }
+        byId("askAnswer").textContent = blocks.join("\n\n");
       }
 
       async function ask(question, clarificationResponse = null) {
@@ -3572,9 +1436,6 @@ export function renderAppHtml(): string {
               ? payload.answerContract
               : payload.answer;
           renderAskAnswerContract(answerPayload);
-          state.lastAskSceneSeed = payload?.sceneSeed || null;
-          state.lastAskGraphSuggestion = payload?.graphSuggestion || null;
-          renderAskGraphSuggestion(payload);
 
           const refs = Array.isArray(payload.evidenceRefs)
             ? payload.evidenceRefs
@@ -3603,10 +1464,10 @@ export function renderAppHtml(): string {
                   ? r.sourceMessageId
                   : "n/a";
               const excerpt = typeof r.excerpt === "string" ? r.excerpt : "";
-              return \`<div style="padding:6px 0;border-bottom:1px dashed #1f3b60;">\` +
-                \`[\${pct}%] <span class="muted">\${escapeHtml(String(evidenceRole))} | \${escapeHtml(String(entity))} | \${escapeHtml(String(ts))}</span>\` +
-                \`<br/><span class="muted">conv=\${escapeHtml(String(convId))} | msg=\${escapeHtml(String(msgId))}</span>\` +
-                \`<br/>\${escapeHtml(excerpt)}</div>\`;
+              return `<div style="padding:6px 0;border-bottom:1px dashed #1f3b60;">` +
+                `[${pct}%] <span class="muted">${escapeHtml(String(evidenceRole))} | ${escapeHtml(String(entity))} | ${escapeHtml(String(ts))}</span>` +
+                `<br/><span class="muted">conv=${escapeHtml(String(convId))} | msg=${escapeHtml(String(msgId))}</span>` +
+                `<br/>${escapeHtml(excerpt)}</div>`;
             }).join("");
 
           if (answerPayload && typeof answerPayload === "object" && String(answerPayload.decision || "") === "clarify_first") {
@@ -3628,9 +1489,6 @@ export function renderAppHtml(): string {
           await loadAskDebug(state.lastAnswerRunId);
           switchModule("ask");
         } catch (error) {
-          state.lastAskSceneSeed = null;
-          state.lastAskGraphSuggestion = null;
-          renderAskGraphSuggestion(null);
           byId("askAnswer").textContent = "Ask failed: " + (error.message || String(error));
           byId("askEvidence").textContent = "No evidence.";
         } finally {
@@ -4745,16 +2603,6 @@ export function renderAppHtml(): string {
         const selectedStage = selectedLockStageKey();
         const lockReady = Boolean(stageReadiness?.[selectedStage]?.pass);
         const startReady = Boolean(gates.readyForStart);
-        const renderMinMetric = (label, value, target) => {
-          const normalizedTarget = Number(target ?? 0);
-          if (!(normalizedTarget > 0)) return "";
-          return '<div class="preloop-stage-metric"><span>' + escapeHtml(String(label)) + '</span><strong>' + Number(value || 0) + ' / ' + normalizedTarget + '</strong></div>';
-        };
-        const renderMaxMetric = (label, value, target) => {
-          if (target == null || target === "") return "";
-          const normalizedTarget = Number(target || 0);
-          return '<div class="preloop-stage-metric"><span>' + escapeHtml(String(label)) + '</span><strong>' + Number(value || 0) + ' / ' + normalizedTarget + '</strong></div>';
-        };
         byId("preloopQueueCounts").innerHTML =
           "<b>Queue now</b><br/>"
           + "Pending " + Number(queueCounts.pending || 0)
@@ -4779,7 +2627,14 @@ export function renderAppHtml(): string {
               : "Certification";
           const item = stageReadiness?.[key] || {};
           const isReady = Boolean(item.pass);
+          const blockers = Array.isArray(item.blockers) ? item.blockers : [];
           const statusText = isReady ? "ready" : "blocked";
+          const blockerRows = blockers.length > 0
+            ? blockers
+              .map((row) => '<div class="preloop-stage-blocker">' + escapeHtml(String(row)) + "</div>")
+              .join("")
+            : "";
+          const blockerRowsHtml = blockerRows ? '<div class="preloop-stage-blockers">' + blockerRows + "</div>" : "";
           const threshold = item.thresholds || {};
           const pendingOwnerValue = Number(
             key === "core_ready"
@@ -4792,22 +2647,6 @@ export function renderAppHtml(): string {
               : (lockCounts.pendingCalibrationInSelectionSlice || 0)
           );
           const statusClass = isReady ? "ready" : "blocked";
-          const readinessMetrics = [
-            renderMinMetric("Owner reviewed", lockCounts.ownerReviewedTotal || 0, threshold.ownerReviewedTotalMin),
-            renderMinMetric("Reviewed yes", lockCounts.ownerApprovedYes || 0, threshold.ownerApprovedYesMin),
-            renderMinMetric("Reviewed no", lockCounts.ownerRejectedNo || 0, threshold.representativeNoMin),
-            renderMinMetric("Reviewed clarify", lockCounts.reviewedClarify || 0, threshold.reviewedClarifyMin),
-            renderMaxMetric("Pending owner", pendingOwnerValue, threshold.pendingOwnerMax),
-            renderMaxMetric("Pending calibration", pendingCalibrationValue, threshold.pendingCalibrationMax)
-          ].filter(Boolean).join("");
-          const coverageMetrics = [
-            renderMinMetric("Domains", lockCounts.approvedDomainCoverage || 0, threshold.approvedDomainCoverageMin),
-            renderMinMetric("Lenses", lockCounts.approvedLensCoverage || 0, threshold.approvedLensCoverageMin),
-            renderMinMetric("Actors", lockCounts.approvedActorCoverage || 0, threshold.actorCoverageMin),
-            renderMinMetric("Groups", lockCounts.approvedGroupCoverage || 0, threshold.groupCoverageMin),
-            renderMinMetric("Families", lockCounts.approvedDistinctConversationFamilies || 0, threshold.distinctConversationFamiliesMin),
-            renderMinMetric("Critical reviewed", lockCounts.criticalReviewedSlice || 0, threshold.criticalReviewedSliceMin)
-          ].filter(Boolean).join("");
           return '<article class="preloop-stage-card ' + statusClass + '">'
             + '<div class="preloop-stage-head">'
             + '<div class="preloop-stage-title">' + label + '</div>'
@@ -4816,13 +2655,24 @@ export function renderAppHtml(): string {
             + '<div class="preloop-stage-group">'
             + '<div class="preloop-stage-group-title">Readiness</div>'
             + '<div class="preloop-stage-metric-list">'
-            + readinessMetrics
+            + '<div class="preloop-stage-metric"><span>Owner reviewed</span><strong>' + Number(lockCounts.ownerReviewedTotal || 0) + ' / ' + (Number(threshold.ownerReviewedTotalMin || 0) || "&mdash;") + '</strong></div>'
+            + '<div class="preloop-stage-metric"><span>Reviewed yes</span><strong>' + Number(lockCounts.ownerApprovedYes || 0) + ' / ' + (Number(threshold.ownerApprovedYesMin || 0) || "&mdash;") + '</strong></div>'
+            + '<div class="preloop-stage-metric"><span>Reviewed no</span><strong>' + Number(lockCounts.ownerRejectedNo || 0) + ' / ' + (Number(threshold.representativeNoMin || 0) || "&mdash;") + '</strong></div>'
+            + '<div class="preloop-stage-metric"><span>Reviewed clarify</span><strong>' + Number(lockCounts.reviewedClarify || 0) + ' / ' + (Number(threshold.reviewedClarifyMin || 0) || "&mdash;") + '</strong></div>'
+            + '<div class="preloop-stage-metric"><span>Pending owner</span><strong>' + pendingOwnerValue + ' / ' + (Number(threshold.pendingOwnerMax || 0) || "&mdash;") + '</strong></div>'
+            + '<div class="preloop-stage-metric"><span>Pending calibration</span><strong>' + pendingCalibrationValue + ' / ' + (Number(threshold.pendingCalibrationMax || 0) || "&mdash;") + '</strong></div>'
             + '</div></div>'
             + '<div class="preloop-stage-group">'
             + '<div class="preloop-stage-group-title">Coverage</div>'
             + '<div class="preloop-stage-metric-list">'
-            + coverageMetrics
+            + '<div class="preloop-stage-metric"><span>Domains</span><strong>' + Number(lockCounts.approvedDomainCoverage || 0) + ' / ' + (Number(threshold.approvedDomainCoverageMin || 0) || "&mdash;") + '</strong></div>'
+            + '<div class="preloop-stage-metric"><span>Lenses</span><strong>' + Number(lockCounts.approvedLensCoverage || 0) + ' / ' + (Number(threshold.approvedLensCoverageMin || 0) || "&mdash;") + '</strong></div>'
+            + '<div class="preloop-stage-metric"><span>Actors</span><strong>' + Number(lockCounts.approvedActorCoverage || 0) + ' / ' + (Number(threshold.actorCoverageMin || 0) || "&mdash;") + '</strong></div>'
+            + '<div class="preloop-stage-metric"><span>Groups</span><strong>' + Number(lockCounts.approvedGroupCoverage || 0) + ' / ' + (Number(threshold.groupCoverageMin || 0) || "&mdash;") + '</strong></div>'
+            + '<div class="preloop-stage-metric"><span>Families</span><strong>' + Number(lockCounts.approvedDistinctConversationFamilies || 0) + ' / ' + (Number(threshold.distinctConversationFamiliesMin || 0) || "&mdash;") + '</strong></div>'
+            + '<div class="preloop-stage-metric"><span>Critical reviewed</span><strong>' + Number(lockCounts.criticalReviewedSlice || 0) + ' / ' + (Number(threshold.criticalReviewedSliceMin || 0) || "&mdash;") + '</strong></div>'
             + '</div></div>'
+            + blockerRowsHtml
             + '</article>';
         }).join("");
         byId("preloopStageReadiness").className = "preloop-stage-grid";
@@ -4969,7 +2819,7 @@ export function renderAppHtml(): string {
         const now = new Date().toLocaleTimeString();
         const next = "[" + now + "] " + line;
         const existing = String(el.textContent || "");
-        el.textContent = existing ? (existing + "\\n" + next) : next;
+        el.textContent = existing ? (existing + "\n" + next) : next;
         el.scrollTop = el.scrollHeight;
       }
 
@@ -5071,21 +2921,11 @@ export function renderAppHtml(): string {
       }
 
       document.querySelectorAll(".nav-btn").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          if (btn.dataset.module === "network") {
-            state.network.sceneMode = "default";
-            state.network.sceneSeed = null;
-            state.network.selectedEdgeId = "";
-          }
-          switchModule(btn.dataset.module);
-        });
+        btn.addEventListener("click", () => switchModule(btn.dataset.module));
       });
 
       byId("askTabAnswer").addEventListener("click", () => switchAskTab("answer"));
       byId("askTabDebug").addEventListener("click", () => switchAskTab("debug"));
-      byId("askShowGraphButton").addEventListener("click", async () => {
-        await openAskSceneInNetwork();
-      });
       byId("networkChatSend").addEventListener("click", async () => {
         await runNetworkInput(byId("networkChatInput").value || "");
         byId("networkChatInput").value = "";
@@ -5583,8 +3423,4 @@ export function renderAppHtml(): string {
           });
       }
     })();
-  </script>
-</body>
-</html>`;
-}
-
+  

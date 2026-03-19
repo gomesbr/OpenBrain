@@ -40,8 +40,30 @@ const STOP_ENTITY = new Set([
   "amem"
 ]);
 
+const GENERIC_PERSON_TOKENS = new Set([
+  "family",
+  "friend",
+  "friends",
+  "couple",
+  "partner",
+  "parents",
+  "mom",
+  "dad",
+  "wife",
+  "husband",
+  "baby",
+  "participants",
+  "neighbor",
+  "neighbors"
+]);
+
 function norm(value: string): string {
   return String(value ?? "")
+    .replaceAll("\u00a0", " ")
+    .replaceAll("\u202f", " ")
+    .replace(/^[~\s]+/u, "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9\s_-]+/g, "")
@@ -57,10 +79,14 @@ function isLikelyNoiseEntity(name: string): boolean {
   if (!n) return true;
   if (n.length < 2) return true;
   if (STOP_ENTITY.has(n)) return true;
+  if (GENERIC_PERSON_TOKENS.has(n)) return true;
   if (/\d/.test(n)) return true;
+  if (/[,&/]/.test(String(name ?? ""))) return true;
+  if (/\b(and|with|plus|participants|neighbors?)\b/.test(n)) return true;
   const tokens = n.split(" ").filter(Boolean);
   if (tokens.length > 4) return true;
   if (tokens.every((token) => STOP_ENTITY.has(token))) return true;
+  if (tokens.some((token) => GENERIC_PERSON_TOKENS.has(token)) && tokens.length > 1) return true;
   if (tokens.every((token) => token.length <= 2)) return true;
   if (/^(ha)+$/.test(n)) return true;
   return false;
@@ -70,58 +96,25 @@ export async function materializeCandidates(limit = 2500): Promise<Record<string
   const safeLimit = Number.isFinite(Number(limit)) ? Math.max(100, Math.min(500000, Number(limit))) : 2500;
 
   const insertedEntities = await pool.query(
-    `WITH src AS (
+    `WITH actor_projection AS (
        SELECT
-         c.id,
-         c.chat_namespace,
-         COALESCE(c.observed_at, c.recorded_at) AS observed_at,
-         c.quality_score,
-         c.metadata
-       FROM canonical_messages c
-       WHERE c.artifact_state = 'published'
-       ORDER BY c.observed_at DESC
+         ac.chat_namespace,
+         a.actor_id,
+         a.normalized_name,
+         a.canonical_name AS display_name,
+         MAX(ac.confidence) AS base_confidence,
+         COALESCE(SUM(asp.message_count), 0)::int AS message_count,
+         MAX(COALESCE(asp.last_seen_at, ac.updated_at)) AS observed_at
+       FROM actors a
+       JOIN actor_context ac
+         ON ac.actor_id = a.actor_id
+       LEFT JOIN actor_source_profile asp
+         ON asp.actor_id = a.actor_id
+        AND asp.chat_namespace = ac.chat_namespace
+       WHERE ac.actor_type IN ('user', 'contact')
+       GROUP BY ac.chat_namespace, a.actor_id, a.normalized_name, a.canonical_name
+       ORDER BY MAX(COALESCE(asp.last_seen_at, ac.updated_at)) DESC NULLS LAST
        LIMIT $1
-     ),
-     people_src AS (
-       SELECT
-         src.id,
-         src.chat_namespace,
-         src.observed_at,
-         src.quality_score,
-         trim(p.value::text) AS display_name,
-         0.92::float8 AS confidence_multiplier,
-         'people_array'::text AS source_kind
-       FROM src
-       CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(src.metadata->'people', '[]'::jsonb)) p
-       UNION ALL
-       SELECT
-         src.id,
-         src.chat_namespace,
-         src.observed_at,
-         src.quality_score,
-         trim(COALESCE(h.value->>'targetHint', '')) AS display_name,
-         LEAST(1.0, GREATEST(0.35, COALESCE((h.value->>'confidence')::float8, 0.45))) AS confidence_multiplier,
-         'relationship_hint'::text AS source_kind
-       FROM src
-       CROSS JOIN LATERAL jsonb_array_elements(COALESCE(src.metadata->'relationship_hints', '[]'::jsonb)) h(value)
-     ),
-     people_ranked AS (
-       SELECT
-         ps.id,
-         ps.chat_namespace,
-         ps.observed_at,
-         ps.quality_score,
-         ps.source_kind,
-         ps.display_name,
-         trim(regexp_replace(lower(ps.display_name), '\\s+', ' ', 'g')) AS normalized_name,
-         LEAST(1.0, GREATEST(0.0, ps.quality_score * ps.confidence_multiplier)) AS candidate_confidence,
-         ROW_NUMBER() OVER (
-           PARTITION BY ps.chat_namespace, trim(regexp_replace(lower(ps.display_name), '\\s+', ' ', 'g'))
-           ORDER BY (ps.quality_score * ps.confidence_multiplier) DESC, ps.observed_at DESC, ps.id DESC
-         ) AS rn
-       FROM people_src ps
-       WHERE ps.display_name IS NOT NULL
-         AND trim(ps.display_name) <> ''
      )
      INSERT INTO entity_candidates (
        chat_namespace,
@@ -136,27 +129,29 @@ export async function materializeCandidates(limit = 2500): Promise<Record<string
        updated_at
      )
      SELECT
-       ps.chat_namespace,
+       ap.chat_namespace,
        'person',
-       ps.normalized_name,
-       ps.display_name,
-       ps.candidate_confidence,
+       ap.normalized_name,
+       ap.display_name,
+       LEAST(1.0, GREATEST(0.7, COALESCE(ap.base_confidence, 0.5) * 0.8 + LEAST(ap.message_count, 250)::float8 / 250.0 * 0.2)),
        jsonb_build_object(
-         'canonicalMessageId', ps.id,
-         'observedAt', ps.observed_at,
-         'sourceKind', ps.source_kind
+         'actorId', ap.actor_id,
+         'observedAt', ap.observed_at,
+         'messageCount', ap.message_count,
+         'sourceKind', 'actor_projection'
        ),
        'candidate',
-       jsonb_build_object('source', 'canonical_messages', 'qualityScore', ps.quality_score),
+       jsonb_build_object('source', 'actors', 'messageCount', ap.message_count, 'baseConfidence', ap.base_confidence),
        now(),
        now()
-     FROM people_ranked ps
-     WHERE ps.rn = 1
-       AND ps.normalized_name <> ''
+     FROM actor_projection ap
+     WHERE ap.normalized_name <> ''
      ON CONFLICT (chat_namespace, entity_type, normalized_name)
      DO UPDATE SET
+       display_name = EXCLUDED.display_name,
        confidence = GREATEST(entity_candidates.confidence, EXCLUDED.confidence),
        evidence = EXCLUDED.evidence,
+       quality_signals = COALESCE(entity_candidates.quality_signals, '{}'::jsonb) || EXCLUDED.quality_signals,
        updated_at = now()`,
     [safeLimit]
   );
@@ -284,6 +279,37 @@ export async function materializeCandidates(limit = 2500): Promise<Record<string
          dc.quality_score,
          dc.domain
      )
+     ,
+     candidate_rows AS (
+       SELECT
+         dc.chat_namespace,
+         dc.domain,
+         'message_claim'::text AS fact_type,
+         left(dc.content_normalized, 450) AS value_text,
+         jsonb_build_object('rawLength', length(dc.content_normalized), 'domainScore', dc.domain_score) AS value_json,
+         LEAST(1.0, GREATEST(0.0, dc.quality_score * (0.55 + dc.domain_score * 0.45))) AS confidence,
+         jsonb_build_object('canonicalMessageId', dc.id) AS evidence,
+         'candidate'::text AS artifact_state,
+         jsonb_build_object('source', 'canonical_messages') AS quality_signals,
+         md5(dc.chat_namespace || '|' || dc.domain || '|' || dc.content_normalized || '|' || coalesce(dc.observed_at::text, '')) AS content_hash,
+         dc.observed_at AS source_timestamp,
+         dc.id AS canonical_message_id
+       FROM domain_dedup dc
+       WHERE length(dc.content_normalized) > 0
+     ),
+     chosen AS (
+       SELECT *
+       FROM (
+         SELECT
+           cr.*,
+           ROW_NUMBER() OVER (
+             PARTITION BY cr.chat_namespace, cr.content_hash
+             ORDER BY cr.confidence DESC, cr.source_timestamp DESC NULLS LAST, cr.canonical_message_id
+           ) AS rn
+         FROM candidate_rows cr
+       ) ranked
+       WHERE rn = 1
+     )
      INSERT INTO fact_candidates (
        chat_namespace,
        domain,
@@ -300,21 +326,20 @@ export async function materializeCandidates(limit = 2500): Promise<Record<string
        updated_at
      )
      SELECT
-       dc.chat_namespace,
-       dc.domain,
-       'message_claim',
-       left(dc.content_normalized, 450),
-       jsonb_build_object('rawLength', length(dc.content_normalized), 'domainScore', dc.domain_score),
-       LEAST(1.0, GREATEST(0.0, dc.quality_score * (0.55 + dc.domain_score * 0.45))),
-       jsonb_build_object('canonicalMessageId', dc.id),
-       'candidate',
-       jsonb_build_object('source', 'canonical_messages'),
-       md5(dc.chat_namespace || '|' || dc.domain || '|' || dc.content_normalized || '|' || coalesce(dc.observed_at::text, '')),
-       dc.observed_at,
+       c.chat_namespace,
+       c.domain,
+       c.fact_type,
+       c.value_text,
+       c.value_json,
+       c.confidence,
+       c.evidence,
+       c.artifact_state,
+       c.quality_signals,
+       c.content_hash,
+       c.source_timestamp,
        now(),
        now()
-     FROM domain_dedup dc
-     WHERE length(dc.content_normalized) > 0
+     FROM chosen c
      ON CONFLICT (chat_namespace, content_hash)
      DO UPDATE SET confidence = GREATEST(fact_candidates.confidence, EXCLUDED.confidence), updated_at = now()`,
     [safeLimit, TAXONOMY_DOMAINS]
@@ -347,6 +372,36 @@ export async function materializeCandidates(limit = 2500): Promise<Record<string
        CROSS JOIN LATERAL jsonb_each_text(COALESCE(src.metadata->'trait_scores', '{}'::jsonb)) t(key, value)
        WHERE LEAST(1.0, GREATEST(0.0, COALESCE(NULLIF(t.value, '')::float8, 0.0))) >= 0.30
      )
+     ,
+     candidate_rows AS (
+       SELECT
+         traits.chat_namespace,
+         'personality_traits'::text AS domain,
+         'trait_signal'::text AS fact_type,
+         traits.trait_key AS value_text,
+         jsonb_build_object('trait', traits.trait_key, 'score', traits.trait_score, 'textSample', left(traits.content_normalized, 180)) AS value_json,
+         LEAST(1.0, GREATEST(0.0, traits.quality_score * (0.50 + traits.trait_score * 0.50))) AS confidence,
+         jsonb_build_object('canonicalMessageId', traits.id) AS evidence,
+         'candidate'::text AS artifact_state,
+         jsonb_build_object('source', 'trait_scores') AS quality_signals,
+         md5(traits.chat_namespace || '|trait|' || traits.trait_key || '|' || traits.content_normalized || '|' || coalesce(traits.observed_at::text, '')) AS content_hash,
+         traits.observed_at AS source_timestamp,
+         traits.id AS canonical_message_id
+       FROM traits
+     ),
+     chosen AS (
+       SELECT *
+       FROM (
+         SELECT
+           cr.*,
+           ROW_NUMBER() OVER (
+             PARTITION BY cr.chat_namespace, cr.content_hash
+             ORDER BY cr.confidence DESC, cr.source_timestamp DESC NULLS LAST, cr.canonical_message_id
+           ) AS rn
+         FROM candidate_rows cr
+       ) ranked
+       WHERE rn = 1
+     )
      INSERT INTO fact_candidates (
        chat_namespace,
        domain,
@@ -363,20 +418,20 @@ export async function materializeCandidates(limit = 2500): Promise<Record<string
        updated_at
      )
      SELECT
-       traits.chat_namespace,
-       'personality_traits',
-       'trait_signal',
-       traits.trait_key,
-       jsonb_build_object('trait', traits.trait_key, 'score', traits.trait_score, 'textSample', left(traits.content_normalized, 180)),
-       LEAST(1.0, GREATEST(0.0, traits.quality_score * (0.50 + traits.trait_score * 0.50))),
-       jsonb_build_object('canonicalMessageId', traits.id),
-       'candidate',
-       jsonb_build_object('source', 'trait_scores'),
-       md5(traits.chat_namespace || '|trait|' || traits.trait_key || '|' || traits.content_normalized || '|' || coalesce(traits.observed_at::text, '')),
-       traits.observed_at,
+       c.chat_namespace,
+       c.domain,
+       c.fact_type,
+       c.value_text,
+       c.value_json,
+       c.confidence,
+       c.evidence,
+       c.artifact_state,
+       c.quality_signals,
+       c.content_hash,
+       c.source_timestamp,
        now(),
        now()
-     FROM traits
+     FROM chosen c
      ON CONFLICT (chat_namespace, content_hash)
      DO UPDATE SET confidence = GREATEST(fact_candidates.confidence, EXCLUDED.confidence), updated_at = now()`,
     [safeLimit]
@@ -534,13 +589,23 @@ export async function materializeCandidates(limit = 2500): Promise<Record<string
 }
 
 async function applyGateForTable(table: "entity_candidates" | "fact_candidates" | "relationship_candidates" | "insight_candidates"): Promise<{ published: number; validated: number; deprecated: number }> {
-  const rows = await pool.query<{ id: string; confidence: number; row_json: Record<string, unknown> }>(
-    `SELECT id, confidence, to_jsonb(t) AS row_json FROM ${table} t`
+  const rows = await pool.query<{ id: string; confidence: number; artifact_state: string; row_json: Record<string, unknown> }>(
+    `SELECT id, confidence, artifact_state, to_jsonb(t) AS row_json FROM ${table} t`
   );
 
   let published = 0;
   let validated = 0;
   let deprecated = 0;
+  const artifactType = table.replace("_candidates", "");
+  const classified: Array<{
+    id: string;
+    currentState: string;
+    nextState: string;
+    decision: "promote" | "hold" | "retry" | "deprecate";
+    confidence: number;
+    name: string;
+    traceId: string;
+  }> = [];
 
   for (const row of rows.rows) {
     const confidence = Number(row.confidence ?? 0);
@@ -558,12 +623,6 @@ async function applyGateForTable(table: "entity_candidates" | "fact_candidates" 
     if (isLikelyNoiseEntity(name)) {
       next = "deprecated";
       deprecated += 1;
-      await pool.query(
-        `INSERT INTO quarantine_artifacts (artifact_type, artifact_id, reason, payload)
-         VALUES ($1, $2::uuid, $3, $4::jsonb)
-         ON CONFLICT DO NOTHING`,
-        [table.replace("_candidates", ""), row.id, "noise_or_low_semantic_value", JSON.stringify({ name })]
-      );
     } else if (confidence >= 0.82) {
       next = "published";
       published += 1;
@@ -574,10 +633,83 @@ async function applyGateForTable(table: "entity_candidates" | "fact_candidates" 
       next = "candidate";
     }
 
-    await pool.query(`UPDATE ${table} SET artifact_state = $2, updated_at = now() WHERE id = $1::uuid`, [row.id, next]);
+    classified.push({
+      id: row.id,
+      currentState: String(row.artifact_state ?? ""),
+      nextState: next,
+      decision:
+        next === "published" ? "promote" :
+        next === "validated" ? "hold" :
+        next === "deprecated" ? "deprecate" :
+        "retry",
+      confidence,
+      name,
+      traceId: hashKey(`${table}:${row.id}:${next}`)
+    });
+  }
+
+  const changed = classified.filter((row) => row.currentState !== row.nextState);
+  const batchSize = 5000;
+  for (let offset = 0; offset < changed.length; offset += batchSize) {
+    const chunk = changed.slice(offset, offset + batchSize);
+    const chunkJson = JSON.stringify(chunk);
 
     await pool.query(
-      `INSERT INTO quality_decisions (
+      `WITH payload AS (
+         SELECT *
+           FROM json_to_recordset($1::json) AS x(
+             id uuid,
+             "currentState" text,
+             "nextState" text,
+             decision text,
+             confidence double precision,
+             name text,
+             "traceId" text
+           )
+       )
+       UPDATE ${table} t
+          SET artifact_state = p."nextState",
+              updated_at = now()
+         FROM payload p
+        WHERE t.id = p.id`,
+      [chunkJson]
+    );
+
+    await pool.query(
+      `WITH payload AS (
+         SELECT *
+           FROM json_to_recordset($1::json) AS x(
+             id uuid,
+             "currentState" text,
+             "nextState" text,
+             decision text,
+             confidence double precision,
+             name text,
+             "traceId" text
+           )
+       )
+       INSERT INTO quarantine_artifacts (artifact_type, artifact_id, reason, payload)
+       SELECT $2, p.id, 'noise_or_low_semantic_value', jsonb_build_object('name', p.name)
+         FROM payload p
+        WHERE p."nextState" = 'deprecated'
+        ON CONFLICT DO NOTHING`,
+      [chunkJson, artifactType]
+    );
+
+    await pool.query(
+      `WITH payload AS (
+         SELECT *
+           FROM json_to_recordset($1::json) AS x(
+             id uuid,
+             "currentState" text,
+             "nextState" text,
+             decision text,
+             confidence double precision,
+             name text,
+             "traceId" text
+           )
+       )
+       INSERT INTO quality_decisions (
          artifact_type,
          artifact_id,
          decision,
@@ -586,17 +718,19 @@ async function applyGateForTable(table: "entity_candidates" | "fact_candidates" 
          reasoning,
          decided_by,
          trace_id
-       ) VALUES ($1, $2::uuid, $3, $4, $5::text[], $6::jsonb, $7, $8)`,
-      [
-        table.replace("_candidates", ""),
-        row.id,
-        next === "published" ? "promote" : next === "validated" ? "hold" : next === "deprecated" ? "deprecate" : "retry",
-        confidence,
-        [next],
-        JSON.stringify({ table, name }),
-        "quality_adjudicator_agent",
-        hashKey(`${table}:${row.id}:${next}`)
-      ]
+       )
+       SELECT
+         $2,
+         p.id,
+         p.decision,
+         p.confidence,
+         ARRAY[p."nextState"]::text[],
+         jsonb_build_object('table', $3::text, 'name', p.name),
+         'quality_adjudicator_agent',
+         p."traceId"
+       FROM payload p
+       ON CONFLICT DO NOTHING`,
+      [chunkJson, artifactType, table]
     );
   }
 

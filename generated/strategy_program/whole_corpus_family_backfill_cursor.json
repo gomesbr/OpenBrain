@@ -1,9 +1,9 @@
 {
-  "familyOffset": 393,
-  "nextFamilyOffset": 393,
-  "startFamilyOffset": 387,
-  "familySeedCount": 606,
-  "scannedFamilies": 6,
-  "completedFullPass": false,
-  "at": "2026-03-15T16:05:08.970Z"
+  "familyOffset": 260,
+  "nextFamilyOffset": 260,
+  "startFamilyOffset": 260,
+  "familySeedCount": 0,
+  "scannedFamilies": 0,
+  "completedFullPass": true,
+  "at": "2026-03-16T17:42:37.503Z"
 }
