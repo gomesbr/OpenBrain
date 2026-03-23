@@ -9,6 +9,14 @@ function readEnv(name: string, fallback = ""): string {
   return trimmed.length > 0 ? trimmed : fallback;
 }
 
+function readEnvAny(names: string[], fallback = ""): string {
+  for (const name of names) {
+    const value = readEnv(name);
+    if (value) return value;
+  }
+  return fallback;
+}
+
 function readNumber(name: string, fallback: number): number {
   const value = Number(readEnv(name));
   return Number.isFinite(value) && value > 0 ? value : fallback;
@@ -69,11 +77,11 @@ export const config = {
   v2ServiceTokenTtlSec: readNumber("OPENBRAIN_V2_SERVICE_TOKEN_TTL_SEC", 3600),
 
   smsEnabled: readBool("OPENBRAIN_SMS_ENABLED", false),
-  smsProvider: readEnv("OPENBRAIN_SMS_PROVIDER", "twilio"),
-  smsTo: readEnv("OPENBRAIN_SMS_TO", ""),
-  twilioAccountSid: readEnv("TWILIO_ACCOUNT_SID", ""),
-  twilioAuthToken: readEnv("TWILIO_AUTH_TOKEN", ""),
-  twilioFromNumber: readEnv("TWILIO_FROM_NUMBER", "")
+  smsProvider: readEnvAny(["OPENBRAIN_SMS_PROVIDER", "SMS_PROVIDER"], "twilio"),
+  smsTo: readEnvAny(["OPENBRAIN_SMS_TO", "TWILIO_TO"], ""),
+  twilioAccountSid: readEnvAny(["TWILIO_ACCOUNT_SID", "ACCOUNT_SID"], ""),
+  twilioAuthToken: readEnvAny(["TWILIO_AUTH_TOKEN", "AUTH_TOKEN"], ""),
+  twilioFromNumber: readEnvAny(["TWILIO_FROM_NUMBER", "TWILIO_FROM"], "")
 } as const;
 
 export type Config = typeof config;

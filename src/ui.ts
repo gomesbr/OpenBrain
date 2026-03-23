@@ -2597,7 +2597,7 @@ export function renderAppHtml(): string {
         });
       }
 
-      function renderNetworkDetail(detail) {
+      function renderNetworkDetail(detail, payload = null) {
         const title = byId("networkDetailTitle");
         const subtitle = byId("networkDetailSubtitle");
         const sectionsHost = byId("networkDetailSections");
@@ -2609,7 +2609,32 @@ export function renderAppHtml(): string {
         }
         title.textContent = String(detail.title || "You");
         subtitle.textContent = String(detail.subtitle || "");
-        const sections = Array.isArray(detail.sections) ? detail.sections : [];
+        const sections = Array.isArray(detail.sections) ? [...detail.sections] : [];
+        const panelItems = Array.isArray(payload?.evidencePanel?.items) ? payload.evidencePanel.items : [];
+        if (panelItems.length > 0) {
+          const evidenceBullets = panelItems
+            .map((item) => {
+              const excerpt = String(item?.excerpt || "").trim();
+              if (!excerpt) return "";
+              const actor = String(item?.actorName || "").trim();
+              const conversation = String(item?.conversationLabel || "").trim();
+              const prefix = [actor, conversation].filter(Boolean).join(" · ");
+              return prefix ? prefix + ": " + excerpt : excerpt;
+            })
+            .filter(Boolean)
+            .slice(0, 4);
+          const existingEvidence = sections.find((section) => String(section?.title || "").toLowerCase() === "evidence");
+          if (existingEvidence) {
+            existingEvidence.body = "Supporting evidence for the current selection.";
+            existingEvidence.bullets = evidenceBullets;
+          } else {
+            sections.push({
+              title: "Evidence",
+              body: "Supporting evidence for the current selection.",
+              bullets: evidenceBullets
+            });
+          }
+        }
         sectionsHost.innerHTML = sections.map((section) => {
           const bullets = Array.isArray(section.bullets) && section.bullets.length > 0
             ? '<div class="network-detail-list">' + section.bullets.map((item) => '<div>' + escapeHtml(String(item)) + '</div>').join("") + '</div>'
@@ -3055,7 +3080,7 @@ export function renderAppHtml(): string {
         state.network.selectedNodeId = String(payload?.graph?.selectedNodeId || state.network.selectedNodeId || "");
         state.network.selectedEdgeId = String(payload?.graph?.selectedEdgeId || state.network.selectedEdgeId || "");
         renderNetworkGraph(payload);
-        renderNetworkDetail(payload.detailPanel);
+        renderNetworkDetail(payload.detailPanel, payload);
         renderNetworkEvidencePanel(payload);
         renderNetworkSuggestions([...(Array.isArray(payload.sceneActions) ? payload.sceneActions : []), ...(Array.isArray(payload.commandSuggestions) ? payload.commandSuggestions : [])]);
         renderNetworkSavedLists(payload);

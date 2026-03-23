@@ -2598,12 +2598,23 @@ async function buildAnswerSceneResponse(params: {
     ?? nodes.find((item) => item.nodeType === "actor")
     ?? ownerNode;
   const selectedEdge = state.selectedEdgeId ? edges.find((item) => item.id === state.selectedEdgeId) ?? null : null;
+  const hasExplicitSelection = Boolean(state.selectedNodeId || state.selectedEdgeId);
   const evidenceRefs = selectedEdge
     ? asSceneEvidenceRefs(selectedEdge.metadata?.sceneEvidenceRefs)
-    : asSceneEvidenceRefs(selectedNode?.metadata?.sceneEvidenceRefs);
+    : hasExplicitSelection
+      ? asSceneEvidenceRefs(selectedNode?.metadata?.sceneEvidenceRefs)
+      : primaryEvidence;
   const evidencePanel = await buildEvidencePanelFromSelection({
-    title: selectedEdge ? selectedEdge.label : String(selectedNode?.displayLabel ?? selectedNode?.label ?? "Evidence"),
-    subtitle: selectedEdge ? "Supporting evidence for the selected connection." : `Supporting evidence for ${String(selectedNode?.displayLabel ?? selectedNode?.label ?? "this selection")}.`,
+    title: selectedEdge
+      ? selectedEdge.label
+      : hasExplicitSelection
+        ? String(selectedNode?.displayLabel ?? selectedNode?.label ?? "Evidence")
+        : String(seed.answerSummary || seed.answerText || "Answer evidence"),
+    subtitle: selectedEdge
+      ? "Supporting evidence for the selected connection."
+      : hasExplicitSelection
+        ? `Supporting evidence for ${String(selectedNode?.displayLabel ?? selectedNode?.label ?? "this selection")}.`
+        : "Supporting evidence for the current answer.",
     evidenceRefs,
     chatNamespace: state.chatNamespace
   });

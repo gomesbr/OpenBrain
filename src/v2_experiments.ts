@@ -8510,6 +8510,9 @@ function normalizeEvidenceTextForSummary(text: string): string {
     .replace(/entity\[[^\]]+\]/g, " ")
     .replace(/businesses_map/g, " ")
     .replace(/:::contextlist/gi, " ")
+    .replace(/@[\p{L}\p{N}_./-]+/gu, " ")
+    .replace(/\blang=[^\s&]+(?:&\S*)?/gi, " ")
+    .replace(/\bon\s+(?:mon|tue|wed|thu|fri|sat|sun)[^.!?]{0,80}/gi, " ")
     .replace(/[`*_#>]/g, " ")
     .replace(/\[[^\]]+\]\([^\)]+\)/g, " ")
     .replace(/\s+/g, " ")
@@ -8694,6 +8697,8 @@ function joinHumanList(items: string[], maxItems = 4): string {
 function rankClaimsForQuestion(question: string, claims: string[], limit = 2): Array<{ claim: string; overlap: number; length: number }> {
   const qTokens = new Set(meaningfulTokens(question));
   const focusTerms = new Set(extractQuestionFocusTerms(question));
+  const asksAboutQuestion = /\b(?:ask|asked)\b/i.test(String(question ?? ""));
+  const asksAboutStatement = /\b(?:say|said|mention|mentioned|share|shared|tell|told|explain|explained|state|stated)\b/i.test(String(question ?? ""));
   const ranked = claims
     .map((claim) => {
       const claimTokens = meaningfulTokens(claim);
@@ -8701,14 +8706,16 @@ function rankClaimsForQuestion(question: string, claims: string[], limit = 2): A
       const focusOverlap = claimTokens.filter((token) => focusTerms.has(token)).length;
       const followUpPenalty = looksLikeFollowUpOfferClaim(claim) ? 1 : 0;
       const questionPenalty = /\?$/.test(claim.trim()) ? 1 : 0;
+      const indirectQuestionPenalty = !asksAboutQuestion && asksAboutStatement && /^asked\b/i.test(claim.trim()) ? 1 : 0;
       const specificity = Math.min(4, claimTokens.length);
-      return { claim, overlap, focusOverlap, length: claim.length, followUpPenalty, questionPenalty, specificity };
+      return { claim, overlap, focusOverlap, length: claim.length, followUpPenalty, questionPenalty, indirectQuestionPenalty, specificity };
     })
     .sort((a, b) =>
       b.focusOverlap - a.focusOverlap
       || b.overlap - a.overlap
       || a.followUpPenalty - b.followUpPenalty
       || a.questionPenalty - b.questionPenalty
+      || a.indirectQuestionPenalty - b.indirectQuestionPenalty
       || b.specificity - a.specificity
       || a.length - b.length
       || a.claim.localeCompare(b.claim)
@@ -8727,6 +8734,9 @@ function rewriteClaimForSummary(claim: string, params: {
     .replace(/^also\s+/i, "")
     .replace(/^and\s+/i, "")
     .replace(/^[a-z][a-z ]{1,24}:\s+/i, "")
+    .replace(/^hey[,!\s]+/i, "")
+    .replace(/^hi[,!\s]+/i, "")
+    .replace(/^btw[,!\s]+/i, "")
     .trim();
   if (!out) return "";
   if (params.statementOwnerRole === "other_human") {
@@ -8792,7 +8802,63 @@ function rewriteClaimForSummary(claim: string, params: {
     }
     out = Array.from(deduped.values()).slice(0, 2).join(" ");
   }
+  out = out
+    .replace(/\basked whether\b.*$/i, "")
+    .replace(/\basked how\b.*$/i, "")
+    .replace(/\basked what\b.*$/i, "")
+    .replace(/\basked when\b.*$/i, "")
+    .replace(/\basked why\b.*$/i, "")
+    .replace(/\basked where\b.*$/i, "")
+    .replace(/\basked who\b.*$/i, "")
+    .replace(/\s+on\s+(?:mon|tue|wed|thu|fri|sat|sun)\b.*$/i, "")
+    .replace(/\s+(?:ok|okay)[,.]?\s*this is not urgent\.?$/i, "")
+    .replace(/\butm_[a-z_]+=.*$/i, "")
+    .replace(/\blang=en[_-]us.*$/i, "")
+    .trim();
   return compactText(out, 220);
+}
+
+function actorRoleFromEvidenceRow(row: {
+  actorName?: string | null;
+  actorType?: string | null;
+} | null | undefined): "user" | "other_human" | "assistant_or_system" | "mixed" {
+  const actorType = String(row?.actorType ?? "").trim().toLowerCase();
+  if (actorType === "user") return "user";
+  if (actorType === "assistant" || actorType === "system") return "assistant_or_system";
+  if (String(row?.actorName ?? "").trim()) return "other_human";
+  return "mixed";
+}
+
+function reconcileSemanticFrameWithQuestionActor(
+  question: string,
+  semanticFrame: BenchmarkSemanticFrame | null | undefined,
+  evidenceRows: Array<{ actorName?: string | null; actorType?: string | null }>
+): BenchmarkSemanticFrame | null | undefined {
+  if (!semanticFrame) return semanticFrame;
+  const requestedActor = sanitizeActorLabel(inferRequestedQuestionActor(question) ?? "");
+  if (!requestedActor || isOwnerAliasName(requestedActor)) return semanticFrame;
+  const matchedRow = evidenceRows.find((row) => {
+    const actorName = sanitizeActorLabel(String(row.actorName ?? "").trim());
+    return actorName && lowerText(actorName) === lowerText(requestedActor);
+  });
+  if (!matchedRow) return semanticFrame;
+  const role = actorRoleFromEvidenceRow(matchedRow);
+  const nextPreferredVoices: Array<"user_first_person" | "user_about_other" | "assistant_proxy"> = role === "assistant_or_system"
+    ? ["user_about_other", "assistant_proxy"]
+    : role === "user"
+      ? ["user_first_person", "assistant_proxy"]
+      : ["user_about_other", "assistant_proxy"];
+  return normalizeSemanticFrameOwnerAliases({
+    ...semanticFrame,
+    actorScope: requestedActor,
+    statementOwnerName: requestedActor,
+    statementOwnerRole: role,
+    preferredQuestionVoices: nextPreferredVoices,
+    retrievalFacets: {
+      ...semanticFrame.retrievalFacets,
+      actorNames: normalizeFacetValues([requestedActor, ...(semanticFrame.retrievalFacets.actorNames ?? [])], 8)
+    }
+  });
 }
 
 function capitalizeSentenceStart(text: string): string {
@@ -9046,6 +9112,36 @@ function rewriteOtherHumanQuestionToNamedOwner(
   return compactText(out, 220);
 }
 
+function replaceQuestionLeadActor(question: string, actorReplacement: string): string {
+  return compactText(
+    String(question ?? "").replace(
+      /\b((?:what|which)\s+(?:[a-z'()\/-]+\s+){0,5}?did\s+)(.+?)(\s+(?:say|mention|suggest|share|provide|consider|plan|planned|discuss|tell|explain|state|ask|asked|express|expressed)\b)/i,
+      (_match, prefix: string, _actor: string, suffix: string) => `${prefix}${actorReplacement}${suffix}`
+    ),
+    220
+  );
+}
+
+function alignExplicitQuestionActorToSemanticFrame(
+  question: string,
+  semanticFrame: BenchmarkSemanticFrame | null | undefined,
+  questionVoice: "user_first_person" | "user_about_other" | "assistant_proxy" | "unknown"
+): string {
+  if (!semanticFrame) return compactText(question, 220);
+  const requestedActor = sanitizeActorLabel(inferRequestedQuestionActor(question) ?? "");
+  if (!requestedActor) return compactText(question, 220);
+  let resolvedActor = requestedActor;
+  if (isSelfOwnedSemanticFrame(semanticFrame)) {
+    resolvedActor = questionVoice === "assistant_proxy" ? ownerDisplayName() : "I";
+  } else if (semanticFrame.statementOwnerRole === "assistant_or_system") {
+    resolvedActor = "the assistant";
+  } else if (semanticFrame.statementOwnerRole === "other_human" && semanticFrame.statementOwnerName) {
+    resolvedActor = sanitizeActorLabel(semanticFrame.statementOwnerName) || requestedActor;
+  }
+  if (!resolvedActor || lowerText(resolvedActor) === lowerText(requestedActor)) return compactText(question, 220);
+  return replaceQuestionLeadActor(question, resolvedActor);
+}
+
 function buildSummarySubject(params: {
   question?: string;
   actorName?: string | null;
@@ -9089,7 +9185,7 @@ function normalizeAssistantHistoricalQuestion(
 ): string {
   const normalizedVoice = normalizeQuestionVoiceForFrame(questionVoice, semanticFrame);
   const ownerRole = semanticFrame?.statementOwnerRole ?? "mixed";
-  let out = compactText(String(question ?? "").trim(), 220);
+  let out = alignExplicitQuestionActorToSemanticFrame(String(question ?? "").trim(), semanticFrame, normalizedVoice);
   if (isSelfOwnedSemanticFrame(semanticFrame)) {
     if (normalizedVoice === "assistant_proxy") return rewriteSelfQuestionToProxy(out);
     return rewriteSelfQuestionToFirstPerson(out);
@@ -9140,6 +9236,17 @@ function looksGenericExpectedAnswerSummary(summary: string): boolean {
     || normalized.includes("should explain the");
 }
 
+function looksBrokenExpectedAnswerSummary(question: string, summary: string): boolean {
+  const normalizedSummary = lowerText(String(summary ?? "").trim());
+  if (!normalizedSummary) return true;
+  if (/utm_|lang=en[_-]us|@⁨|t"\)|:::+|kxconfid=|src=email|permissionmode|folder structure|project overview/.test(normalizedSummary)) return true;
+  if (/they.m\b|she.m\b|he.m\b/.test(normalizedSummary)) return true;
+  if (/\basked whether\b/.test(normalizedSummary) && !/\b(?:ask|asked)\b/i.test(String(question ?? ""))) return true;
+  const requestedActor = sanitizeActorLabel(inferRequestedQuestionActor(question) ?? "");
+  if (requestedActor && !isOwnerAliasName(requestedActor) && /^you said\b/i.test(String(summary ?? "").trim())) return true;
+  return false;
+}
+
 function looksLikeConcreteListSummary(summary: string): boolean {
   const text = String(summary ?? "").trim();
   if (!text) return false;
@@ -9150,7 +9257,7 @@ function looksLikeConcreteListSummary(summary: string): boolean {
 }
 
 function inferRequestedQuestionActor(question: string): string | null {
-  const direct = String(question ?? "").trim().match(/\bwhat did (.+?)\s+(?:say|mention|suggest|share|provide|consider|plan|planned|discuss|tell|explain|state)\b/i);
+  const direct = String(question ?? "").trim().match(/\bwhat did (.+?)\s+(?:say|mention|suggest|share|provide|consider|plan|planned|discuss|tell|explain|state|ask|asked|express|expressed)\b/i);
   if (direct?.[1]) {
     const actor = compactText(direct[1], 80);
     if (/^(i|me|myself)$/i.test(actor)) return ownerDisplayName();
@@ -9191,6 +9298,9 @@ function formatSummaryWithSubject(subject: string, joined: string): string {
   const cleaned = compactText(String(joined ?? "").trim(), 320);
   if (!cleaned) return subject;
   if (subject === "The answer") return cleaned;
+  if (/^(they|you both|you|he|she|the assistant)\b/i.test(cleaned)) {
+    return compactText(`${subject} said that ${cleaned}`, 320);
+  }
   if (/^(asked|said|mentioned|shared|explained|noted|reported|wrote)\b/i.test(cleaned)) {
     return compactText(`${subject} ${cleaned}`, 320);
   }
@@ -16830,6 +16940,7 @@ export async function listJudgeCalibrationPending(params: {
     lens: string;
     question: string;
     expected_evidence_ids: string[] | string;
+    case_evidence_ids: string[] | string;
     metadata: Record<string, unknown>;
     ambiguity_class: string | null;
     owner_validation_state: string | null;
@@ -16849,6 +16960,7 @@ export async function listJudgeCalibrationPending(params: {
        c.lens,
        i.question,
        COALESCE(i.expected_evidence_ids::text, '{}') AS expected_evidence_ids,
+       COALESCE(c.evidence_ids::text, '{}') AS case_evidence_ids,
        c.metadata,
        c.ambiguity_class,
        c.owner_validation_state,
@@ -16887,16 +16999,16 @@ export async function listJudgeCalibrationPending(params: {
     [params.experimentId, status, limit, verdict, ambiguityClass]
   );
   const evidenceIds = rows.rows.flatMap((row) => (
-    Array.isArray(row.expected_evidence_ids)
-      ? row.expected_evidence_ids.map(String)
-      : parsePgTextArray(String(row.expected_evidence_ids ?? "{}"))
+    Array.isArray(row.case_evidence_ids)
+      ? row.case_evidence_ids.map(String)
+      : parsePgTextArray(String(row.case_evidence_ids ?? "{}"))
   ));
   const evidenceMap = await loadEvidencePreviewMap(evidenceIds);
   const items = rows.rows.map((r) => {
-      const expectedEvidenceIds = Array.isArray(r.expected_evidence_ids)
-        ? r.expected_evidence_ids.map(String)
-        : parsePgTextArray(String(r.expected_evidence_ids ?? "{}"));
-      const evidencePreview = expectedEvidenceIds
+      const caseEvidenceIds = Array.isArray(r.case_evidence_ids)
+        ? r.case_evidence_ids.map(String)
+        : parsePgTextArray(String(r.case_evidence_ids ?? "{}"));
+      const evidencePreview = caseEvidenceIds
         .map((id) => evidenceMap.get(id))
         .filter(isEvidencePreviewRow)
         .sort((a, b) => {
@@ -16914,7 +17026,7 @@ export async function listJudgeCalibrationPending(params: {
         ? "clarify_first"
         : "answer_now";
       const storedSummary = String(metadata.expectedAnswerSummaryHuman ?? "").trim();
-      const expectedAnswerSummaryHuman = (!storedSummary || looksGenericExpectedAnswerSummary(storedSummary))
+      const expectedAnswerSummaryHuman = (!storedSummary || looksGenericExpectedAnswerSummary(storedSummary) || looksBrokenExpectedAnswerSummary(r.question, storedSummary))
         ? buildEvidenceGroundedAnswerSummary({
           question: r.question,
           domain: r.domain,
@@ -16960,6 +17072,7 @@ export async function listJudgeCalibrationPending(params: {
         reviewVerdict: r.review_verdict ? String(r.review_verdict) : null,
         reviewNotes: r.review_notes ? String(r.review_notes) : null,
         assistantSuggestion,
+        expectedEvidenceIds: caseEvidenceIds,
         queueScore: scorePendingCalibrationQueueCandidate({
           question: r.question,
           ambiguityClass: r.ambiguity_class,
@@ -17059,6 +17172,7 @@ function scorePendingCalibrationQueueCandidate(params: {
 
   if (ambiguityClass === "clarify_required") score += 8;
   if (looksGenericExpectedAnswerSummary(params.expectedAnswerSummaryHuman)) score -= 18;
+  if (looksBrokenExpectedAnswerSummary(question, params.expectedAnswerSummaryHuman)) score -= 160;
   if (questionLooksMalformedForCalibration(question)) score -= 140;
   if (/wrong actor|wrong pronoun|wrong pov|wrong thread|wrong time|summary wrong|too generic|nonsense question|malformed|wrong answer|not grounded|wrong domain/i.test(assistantNotes)) {
     score -= 60;
@@ -17780,8 +17894,16 @@ export async function refreshExperimentExpectedAnswerSummaries(params: {
   let updatedItems = 0;
   for (const row of rows.rows) {
     const metadata = row.metadata ?? {};
-    const semanticFrame = readSemanticFrame(metadata);
+    const existingSemanticFrame = readSemanticFrame(metadata);
     const questionVoiceRaw = String(metadata.questionVoice ?? "unknown").trim();
+    const expectedEvidenceIds = Array.isArray(row.evidence_ids)
+      ? row.evidence_ids.map(String)
+      : parsePgTextArray(String(row.evidence_ids ?? "{}"));
+    const evidencePreview = expectedEvidenceIds
+      .map((id) => evidenceMap.get(id))
+      .filter(isEvidencePreviewRow)
+      .sort((a, b) => String(a.observedAt ?? "").localeCompare(String(b.observedAt ?? "")));
+    const semanticFrame = reconcileSemanticFrameWithQuestionActor(row.question, existingSemanticFrame, evidencePreview) ?? existingSemanticFrame;
     const normalizedQuestionVoice = normalizeQuestionVoiceForFrame(
       questionVoiceRaw === "user_first_person" || questionVoiceRaw === "user_about_other" || questionVoiceRaw === "assistant_proxy"
         ? questionVoiceRaw
@@ -17795,13 +17917,6 @@ export async function refreshExperimentExpectedAnswerSummaries(params: {
     const expectedCoreClaims = Array.isArray(row.expected_core_claims)
       ? row.expected_core_claims.map(String)
       : parseJsonArray(String(row.expected_core_claims ?? "[]"));
-    const expectedEvidenceIds = Array.isArray(row.evidence_ids)
-      ? row.evidence_ids.map(String)
-      : parsePgTextArray(String(row.evidence_ids ?? "{}"));
-    const evidencePreview = expectedEvidenceIds
-      .map((id) => evidenceMap.get(id))
-      .filter(isEvidencePreviewRow)
-      .sort((a, b) => String(a.observedAt ?? "").localeCompare(String(b.observedAt ?? "")));
     const summary = buildEvidenceGroundedAnswerSummary({
       question: normalizedQuestion,
       domain: row.domain,
