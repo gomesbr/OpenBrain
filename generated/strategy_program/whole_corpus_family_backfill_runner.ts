@@ -140,7 +140,7 @@ async function main() {
   const requestedClarify = clarifySeedCount > 0
     ? clarifySeedCount
     : (activeClarifyGap > 0 ? (clarifyOnlyGap ? activeClarifyGap : Math.min(3, activeClarifyGap)) : 0);
-  let clarifyResult: { inserted: number } | null = null;
+  let clarifyResult: Record<string, unknown> | null = null;
   if (requestedClarify > 0) {
     clarifyResult = await backfillCalibrationClarifyCases({
       experimentId: "53761995-3341-4ca2-9af1-b63b9bace516",
@@ -148,11 +148,17 @@ async function main() {
       minCritiqueScore: Number.isFinite(clarifyCritiqueScore)
         ? (clarifyOnlyGap ? Math.min(clarifyCritiqueScore, 0.74) : clarifyCritiqueScore)
         : (clarifyOnlyGap ? 0.74 : 0.8)
-    }) as { inserted: number };
-    console.log(`[run] clarify-inserted=${clarifyResult.inserted}`);
+    }) as Record<string, unknown>;
+    console.log(`[run] clarify-inserted=${Number(clarifyResult.inserted ?? 0)}`);
   }
+  const clarifyFallbackResult = clarifyOnlyGap
+    && clarifyResult
+    && clarifyResult.wholeCorpusFallback
+    && typeof clarifyResult.wholeCorpusFallback === "object"
+      ? clarifyResult.wholeCorpusFallback as Record<string, unknown>
+      : null;
   const result = clarifyOnlyGap
-    ? {
+    ? (clarifyFallbackResult ?? {
         requested: 0,
         candidatePool: 0,
         assistantAccepted: 0,
@@ -164,7 +170,7 @@ async function main() {
         nextFamilyOffset: familyOffset,
         rejectionSamples: [],
         blockedFamilyKeys: []
-      }
+      })
     : await backfillPositiveCalibrationCases({
         experimentId: "53761995-3341-4ca2-9af1-b63b9bace516",
         targetCount: targetCount,

@@ -780,6 +780,128 @@ function compactText(text: string, max = 180): string {
   return `${normalized.slice(0, max - 3)}...`;
 }
 
+function stripEmbeddedWhatsAppQuote(text: string): string {
+  const raw = String(text ?? "");
+  if (!raw) return "";
+  const lines = raw.split(/\r?\n/);
+  const cleanedLines = lines
+    .map((line) => line.replace(/\p{Cf}/gu, "").trimEnd())
+    .filter((line) => !/^\[\d{1,2}\/\d{1,2}\/\d{2,4},\s*[\d: ]+(?:AM|PM|am|pm)?\]\s*[^:\n]{1,80}:\s*/.test(line));
+  return cleanedLines.join("\n").trim();
+}
+
+function cleanEvidencePreviewSnippet(text: string): string {
+  const stripped = stripEmbeddedWhatsAppQuote(text);
+  return String(stripped || text || "")
+    .replace(/\p{Cf}/gu, "")
+    .trim();
+}
+
+function titleCaseMentionName(value: string): string {
+  return compactText(String(value ?? "").trim(), 80)
+    .replace(/\s+/g, " ")
+    .replace(/\b([a-z])([a-z']*)/g, (_, head: string, tail: string) => `${head.toUpperCase()}${tail}`);
+}
+
+const WHATSAPP_MENTION_STOPWORDS = new Set([
+  "a", "an", "and", "at", "be", "but", "by", "for", "from", "group", "has", "have", "he", "her", "here",
+  "him", "his", "hope", "i", "in", "into", "is", "it", "its", "me", "my", "next", "of", "on", "or", "our",
+  "pra", "pro", "que", "she", "someone", "that", "the", "their", "them", "there", "these", "this", "to",
+  "was", "we", "with", "you", "your"
+]);
+
+function extractWhatsAppMentions(text: string): Array<{ raw: string; name: string }> {
+  const cleaned = String(text ?? "").replace(/\p{Cf}/gu, "");
+  const matches: Array<{ raw: string; name: string }> = [];
+  const regex = /(^|[\s([{])@/gu;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(cleaned)) !== null) {
+    const start = regex.lastIndex;
+    const rest = cleaned.slice(start);
+    const tokenMatches = Array.from(rest.matchAll(/[\p{L}\p{N}.'_-]+/gu)).filter((m) => (m.index ?? 0) === 0 || /\s+$/.test(rest.slice(0, m.index ?? 0)));
+    const parts: string[] = [];
+    let consumed = 0;
+    for (const tokenMatch of tokenMatches) {
+      const token = String(tokenMatch[0] ?? "").trim();
+      const tokenIndex = Number(tokenMatch.index ?? 0);
+      if (!token) break;
+      if (parts.length > 0 && tokenIndex > consumed && !/^\s+$/.test(rest.slice(consumed, tokenIndex))) break;
+      if (parts.length > 0 && WHATSAPP_MENTION_STOPWORDS.has(lowerText(token))) break;
+      parts.push(token);
+      consumed = tokenIndex + token.length;
+      if (parts.length >= 4) break;
+    }
+    if (parts.length === 0) continue;
+    const raw = cleaned.slice(start - 1 >= 0 ? start - 1 : start, start + consumed).replace(/^[\s([{]*/, "");
+    matches.push({
+      raw,
+      name: titleCaseMentionName(parts.join(" "))
+    });
+  }
+  return matches;
+}
+
+function rewriteWhatsAppMentionsForSummary(text: string): string {
+  let out = String(text ?? "").replace(/\p{Cf}/gu, "");
+  for (const mention of extractWhatsAppMentions(out).sort((a, b) => b.raw.length - a.raw.length)) {
+    out = out.replace(mention.raw, `(${mention.name})`);
+  }
+  return out;
+}
+
+function normalizeMentionAssertionGrammar(text: string): string {
+  return String(text ?? "").replace(/\(([^)]+)\)\s+be\b/gi, "$1 is");
+}
+
+function extractWhatsAppMentionNames(text: string): string[] {
+  return Array.from(new Set(extractWhatsAppMentions(text).map((match) => match.name).filter(Boolean)));
+}
+
+function normalizeLikelyMentionParenthetical(value: string): string {
+  const tokens = String(value ?? "")
+    .replace(/\p{Cf}/gu, "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (tokens.length <= 1) return titleCaseMentionName(tokens.join(" "));
+  const trimmed: string[] = [];
+  for (const token of tokens) {
+    if (trimmed.length > 0 && WHATSAPP_MENTION_STOPWORDS.has(lowerText(token))) break;
+    trimmed.push(token);
+    if (trimmed.length >= 3) break;
+  }
+  return titleCaseMentionName(trimmed.join(" "));
+}
+
+function normalizeMentionParentheticals(text: string): string {
+  return String(text ?? "").replace(/\(([^)]+)\)/g, (full, inner: string) => {
+    const tokens = String(inner ?? "")
+      .replace(/\p{Cf}/gu, "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    if (tokens.length <= 1) return full;
+    if (!tokens.slice(1).some((token) => WHATSAPP_MENTION_STOPWORDS.has(lowerText(token)))) return full;
+    const normalized = normalizeLikelyMentionParenthetical(inner);
+    return normalized ? `(${normalized})` : full;
+  });
+}
+
+function restoreExplicitMentionReferences(summary: string, evidenceTexts: string[]): string {
+  const mentionName = evidenceTexts
+    .flatMap((text) => extractWhatsAppMentionNames(text))
+    .find(Boolean);
+  const rewritten = mentionName
+    ? String(summary ?? "")
+      .replace(/\(you\)/gi, `(${mentionName})`)
+      .replace(/\byou\b(?=\))/gi, mentionName)
+    : String(summary ?? "");
+  return compactText(
+    normalizeMentionAssertionGrammar(normalizeMentionParentheticals(rewritten)),
+    320
+  );
+}
+
 function relativeWindowPhrase(timestampIso: string | null): string {
   if (!timestampIso) return "recently";
   const ts = Date.parse(timestampIso);
@@ -3813,15 +3935,30 @@ function fallbackAuthoringCandidates(params: {
     }
   ];
   if (params.semanticFrame.ambiguityRisk !== "low") {
-    const clarificationQuestion = clarificationPromptForDomain(params.domain, params.focusArea);
-    out.push({
-      kind: "clarify_first",
-      question: "I remember talking about this but I can't place the exact thread. Can you help me find the right conversation?",
-      rationale: "The context supports a plausible memory lookup, but the first turn can reasonably require one short clarification.",
-      expectedBehavior: "clarify_first",
-      clarificationQuestion,
-      resolvedQuestionAfterClarification: direct
-    });
+    const deterministicClarify = generateClarifyVariantFallbacks(
+      [{ sourceCaseId: "fallback", sourceQuestion: direct }],
+      new Set<string>()
+    )[0];
+    if (deterministicClarify && clarifyCaseNeedsFollowUp({
+      question: String(deterministicClarify.question ?? "").trim(),
+      clarificationQuestion: String(deterministicClarify.clarificationQuestion ?? "").trim(),
+      resolvedQuestionAfterClarification: String(deterministicClarify.resolvedQuestionAfterClarification ?? "").trim(),
+      notes: String(deterministicClarify.rationale ?? "").trim(),
+      modelValue: String(deterministicClarify.missingSlotType ?? "").trim()
+    })) {
+      out.push({
+        kind: "clarify_first",
+        question: normalizeAssistantHistoricalQuestion(String(deterministicClarify.question ?? "").trim(), params.semanticFrame, normalizedVoice),
+        rationale: "The first turn is underspecified enough that one short follow-up improves retrieval.",
+        expectedBehavior: "clarify_first",
+        clarificationQuestion: compactText(String(deterministicClarify.clarificationQuestion ?? "").trim(), 180) || null,
+        resolvedQuestionAfterClarification: normalizeAssistantHistoricalQuestion(
+          String(deterministicClarify.resolvedQuestionAfterClarification ?? "").trim(),
+          params.semanticFrame,
+          normalizedVoice
+        ) || direct
+      });
+    }
   }
   if (params.semanticFrame.supportedLenses.includes("trend_trajectory")) {
     out.push({
@@ -4019,19 +4156,27 @@ function normalizeAuthoringDraft(params: {
       : []);
   const chosenQuestion = initialChosenQuestion || candidates[0]?.question || "";
   const chosenCandidate = candidates.find((item) => item.question === chosenQuestion) ?? candidates[0] ?? null;
-  const expectedBehavior: "answer_now" | "clarify_first" = String(params.parsed.expectedBehavior ?? "").trim() === "clarify_first"
+  const chosenExpectedBehaviorRaw: "answer_now" | "clarify_first" = String(params.parsed.expectedBehavior ?? "").trim() === "clarify_first"
     ? "clarify_first"
     : chosenCandidate?.expectedBehavior ?? "answer_now";
-  const clarificationQuestion = expectedBehavior === "clarify_first"
+  const chosenClarificationQuestion = chosenExpectedBehaviorRaw === "clarify_first"
     ? compactText(String(params.parsed.clarificationQuestion ?? chosenCandidate?.clarificationQuestion ?? "").trim(), 180) || null
     : null;
-  const resolvedQuestionAfterClarification = expectedBehavior === "clarify_first"
+  const chosenResolvedQuestionAfterClarification = chosenExpectedBehaviorRaw === "clarify_first"
     ? normalizeAssistantHistoricalQuestion(
       compactText(String(params.parsed.resolvedQuestionAfterClarification ?? chosenCandidate?.resolvedQuestionAfterClarification ?? "").trim(), 240) || chosenQuestion || "",
       semanticFrame,
       questionVoice
     ) || chosenQuestion || null
     : null;
+  const clarifyNeeded = chosenExpectedBehaviorRaw === "clarify_first" && clarifyCaseNeedsFollowUp({
+    question: chosenQuestion,
+    clarificationQuestion: chosenClarificationQuestion,
+    resolvedQuestionAfterClarification: chosenResolvedQuestionAfterClarification
+  });
+  const expectedBehavior: "answer_now" | "clarify_first" = clarifyNeeded ? "clarify_first" : "answer_now";
+  const clarificationQuestion = clarifyNeeded ? chosenClarificationQuestion : null;
+  const resolvedQuestionAfterClarification = clarifyNeeded ? chosenResolvedQuestionAfterClarification : null;
   const critique = scoreAuthoringCritique({
     question: chosenQuestion,
     questionVoice,
@@ -4854,7 +4999,7 @@ async function authorBenchmarkCaseWithRepairs(params: {
       domainScore: params.domainScore,
       hardGuardReasons
     });
-    const draft: BenchmarkAuthoringDraft = {
+    let draft: BenchmarkAuthoringDraft = {
       ...initialDraft,
       authoringCritique: critique
     };
@@ -4887,6 +5032,42 @@ async function authorBenchmarkCaseWithRepairs(params: {
       modelReasons: draft.rejectionReasons,
       ignoreTaxonomyReasons: true
     });
+    if (admissionDecision.admitted) {
+      const evidencePreview = params.contextRows.map((item) => ({
+        evidenceId: item.canonical_id,
+        actorName: item.actor_name,
+        actorType: item.actor_type,
+        actorMetadata: item.metadata ?? null,
+        observedAt: item.source_timestamp,
+        sourceSystem: item.source_system,
+        snippet: item.content
+      }));
+      if (shouldRewriteExpectedAnswerSummaryWithModel({
+        question: draft.chosenQuestion,
+        summary: draft.expectedAnswerSummaryHuman,
+        expectedBehavior: draft.expectedBehavior,
+        evidencePreview
+      })) {
+        const rewrittenSummary = await rewriteExpectedAnswerSummaryWithModel({
+          id: params.anchor.canonical_id,
+          question: draft.chosenQuestion,
+          expectedBehavior: draft.expectedBehavior,
+          domain: params.domain,
+          lens: params.lens,
+          semanticFrame: draft.semanticFrame,
+          clarificationQuestion: draft.clarificationQuestion,
+          resolvedQuestionAfterClarification: draft.resolvedQuestionAfterClarification,
+          fallbackSummary: draft.expectedAnswerSummaryHuman,
+          evidencePreview
+        });
+        if (rewrittenSummary) {
+          draft = {
+            ...draft,
+            expectedAnswerSummaryHuman: rewrittenSummary
+          };
+        }
+      }
+    }
     lastResult = {
       draft,
       critique,
@@ -5107,6 +5288,42 @@ async function authorWholeCorpusCandidateWithRepairs(params: {
       modelReasons: draft.rejectionReasons,
       ignoreTaxonomyReasons: true
     });
+    if (admissionDecision.admitted) {
+      const evidencePreview = params.contextRows.map((item) => ({
+        evidenceId: item.canonical_id,
+        actorName: item.actor_name,
+        actorType: item.actor_type,
+        actorMetadata: item.metadata ?? null,
+        observedAt: item.source_timestamp,
+        sourceSystem: item.source_system,
+        snippet: item.content
+      }));
+      if (shouldRewriteExpectedAnswerSummaryWithModel({
+        question: draft.chosenQuestion,
+        summary: draft.expectedAnswerSummaryHuman,
+        expectedBehavior: draft.expectedBehavior,
+        evidencePreview
+      })) {
+        const rewrittenSummary = await rewriteExpectedAnswerSummaryWithModel({
+          id: params.anchor.canonical_id,
+          question: draft.chosenQuestion,
+          expectedBehavior: draft.expectedBehavior,
+          domain: assigned.domain,
+          lens: assigned.lens,
+          semanticFrame: draft.semanticFrame,
+          clarificationQuestion: draft.clarificationQuestion,
+          resolvedQuestionAfterClarification: draft.resolvedQuestionAfterClarification,
+          fallbackSummary: draft.expectedAnswerSummaryHuman,
+          evidencePreview
+        });
+        if (rewrittenSummary) {
+          draft = {
+            ...draft,
+            expectedAnswerSummaryHuman: rewrittenSummary
+          };
+        }
+      }
+    }
     lastResult = {
       domain: assigned.domain,
       lens: assigned.lens,
@@ -8422,6 +8639,7 @@ async function loadEvidencePreviewMap(evidenceIds: string[]): Promise<Map<string
     actor_name: string | null;
     actor_type: string | null;
     actor_metadata: Record<string, unknown> | null;
+    speaker_name: string | null;
     observed_at: string | null;
     source_system: string;
     snippet: string;
@@ -8431,24 +8649,33 @@ async function loadEvidencePreviewMap(evidenceIds: string[]): Promise<Map<string
        a.canonical_name AS actor_name,
        c.actor_type,
        a.metadata AS actor_metadata,
+       NULLIF(trim(COALESCE(c.metadata->>'speaker', m.metadata->>'speaker', '')), '') AS speaker_name,
        c.observed_at::text,
        c.source_system,
        c.content_normalized AS snippet
      FROM canonical_messages c
+     LEFT JOIN memory_items m ON m.id = c.memory_item_id
      LEFT JOIN actors a ON a.actor_id = c.actor_id
      WHERE c.id = ANY($1::uuid[])`,
     [ids]
   );
     return new Map(rows.rows.map((row) => [
       row.evidence_id,
-      {
+       {
         evidenceId: row.evidence_id,
-        actorName: row.actor_name ?? null,
-        actorType: row.actor_type ?? null,
+        actorName: (() => {
+          const actorName = String(row.actor_name ?? "").trim();
+          if (actorName) return actorName;
+          const speaker = sanitizeActorLabel(String(row.speaker_name ?? "").trim());
+          if (!speaker) return null;
+          if (/^(whatsapp|system|assistant)$/i.test(speaker)) return null;
+          return speaker;
+        })(),
+        actorType: row.actor_name ? (row.actor_type ?? null) : (String(row.speaker_name ?? "").trim() ? "contact" : (row.actor_type ?? null)),
         actorMetadata: row.actor_metadata ?? null,
         observedAt: row.observed_at ?? null,
         sourceSystem: row.source_system,
-        snippet: String(row.snippet ?? "")
+        snippet: cleanEvidencePreviewSnippet(String(row.snippet ?? ""))
       }
     ]));
 }
@@ -8505,12 +8732,16 @@ function parseEmbeddedResponseText(text: string): string {
 }
 
 function normalizeEvidenceTextForSummary(text: string): string {
-  return parseEmbeddedResponseText(text)
+  return normalizeMentionAssertionGrammar(
+    rewriteWhatsAppMentionsForSummary(
+      stripEmbeddedWhatsAppQuote(parseEmbeddedResponseText(text))
+        .replace(/\p{Cf}/gu, "")
+    )
+  )
     .replace(/cite[^]+/g, " ")
     .replace(/entity\[[^\]]+\]/g, " ")
     .replace(/businesses_map/g, " ")
     .replace(/:::contextlist/gi, " ")
-    .replace(/@[\p{L}\p{N}_./-]+/gu, " ")
     .replace(/\blang=[^\s&]+(?:&\S*)?/gi, " ")
     .replace(/\bon\s+(?:mon|tue|wed|thu|fri|sat|sun)[^.!?]{0,80}/gi, " ")
     .replace(/[`*_#>]/g, " ")
@@ -8552,11 +8783,15 @@ function collectStructuredClaimsFromTexts(texts: string[], limit = 6): string[] 
     const normalized = parseEmbeddedResponseText(text);
     const structured = /(^|\n)\s*(?:\d+[\).:-]|\*|-|•)\s+/.test(normalized) || /\b(first|second|third|two issues|three issues|steps?)\b/i.test(normalized);
     const basePriority = structured ? 3 : 2;
-    for (const claim of splitIntoClaimUnits(normalized)) {
-      const clean = compactText(normalizeEvidenceTextForSummary(claim), 180);
+    const cleanedClaims = splitIntoClaimUnits(normalized)
+      .map((claim) => compactText(normalizeEvidenceTextForSummary(claim), 180))
+      .filter(Boolean);
+    const hasNonQuestionClaim = cleanedClaims.some((claim) => !looksLikeQuestionClaim(claim));
+    for (const clean of cleanedClaims) {
       if (!clean) continue;
       if (looksLikeFileMetaFragment(clean)) continue;
       if (looksLikeFollowUpOfferClaim(clean)) continue;
+      if (hasNonQuestionClaim && looksLikeQuestionClaim(clean)) continue;
       if (/^(here(?:'| i)?s|here are|absolutely|let'?s break down|thanks for confirming|based on what you.ve described|no problem|alright,|okay,|safe drive|search\()/i.test(clean)) continue;
       ranked.push({
         claim: clean,
@@ -8699,21 +8934,24 @@ function rankClaimsForQuestion(question: string, claims: string[], limit = 2): A
   const focusTerms = new Set(extractQuestionFocusTerms(question));
   const asksAboutQuestion = /\b(?:ask|asked)\b/i.test(String(question ?? ""));
   const asksAboutStatement = /\b(?:say|said|mention|mentioned|share|shared|tell|told|explain|explained|state|stated)\b/i.test(String(question ?? ""));
+  const prefersAnswerClaims = questionAsksForAssistantContent(question) || asksAboutStatement;
   const ranked = claims
     .map((claim) => {
       const claimTokens = meaningfulTokens(claim);
       const overlap = claimTokens.filter((token) => qTokens.has(token)).length;
       const focusOverlap = claimTokens.filter((token) => focusTerms.has(token)).length;
       const followUpPenalty = looksLikeFollowUpOfferClaim(claim) ? 1 : 0;
+      const questionLikePenalty = prefersAnswerClaims && looksLikeQuestionClaim(claim) ? 1 : 0;
       const questionPenalty = /\?$/.test(claim.trim()) ? 1 : 0;
       const indirectQuestionPenalty = !asksAboutQuestion && asksAboutStatement && /^asked\b/i.test(claim.trim()) ? 1 : 0;
       const specificity = Math.min(4, claimTokens.length);
-      return { claim, overlap, focusOverlap, length: claim.length, followUpPenalty, questionPenalty, indirectQuestionPenalty, specificity };
+      return { claim, overlap, focusOverlap, length: claim.length, followUpPenalty, questionLikePenalty, questionPenalty, indirectQuestionPenalty, specificity };
     })
     .sort((a, b) =>
       b.focusOverlap - a.focusOverlap
       || b.overlap - a.overlap
       || a.followUpPenalty - b.followUpPenalty
+      || a.questionLikePenalty - b.questionLikePenalty
       || a.questionPenalty - b.questionPenalty
       || a.indirectQuestionPenalty - b.indirectQuestionPenalty
       || b.specificity - a.specificity
@@ -8829,36 +9067,138 @@ function actorRoleFromEvidenceRow(row: {
   return "mixed";
 }
 
-function reconcileSemanticFrameWithQuestionActor(
+function questionAsksAboutUserUtterance(question: string): boolean {
+  const normalized = String(question ?? "").trim();
+  return /^what did i\s+(?:ask|say|mention|share|tell|write)\b/i.test(normalized)
+    || /^what .* did i\s+(?:ask|say|mention|share|tell|write)\b/i.test(normalized)
+    || /^what did i ask the assistant\b/i.test(normalized);
+}
+
+function questionAsksForAssistantContent(question: string): boolean {
+  const normalized = String(question ?? "").trim();
+  if (!normalized || questionAsksAboutUserUtterance(normalized)) return false;
+  return /^can you explain\b/i.test(normalized)
+    || /^what did i learn about\b/i.test(normalized)
+    || /^what did i need to know about\b/i.test(normalized)
+    || /^what do i need to know about\b/i.test(normalized)
+    || /^what .* should i\b/i.test(normalized)
+    || /^what .* can i\b/i.test(normalized)
+    || /^what information did (?:the assistant|.+ assistant)\b/i.test(normalized)
+    || /^what details did (?:the assistant|.+ assistant)\b/i.test(normalized)
+    || /^what suggestions did (?:the assistant|.+ assistant)\b/i.test(normalized)
+    || /^what troubleshooting steps did (?:the assistant|.+ assistant)\b/i.test(normalized)
+    || /^what parking options did (?:the assistant|.+ assistant)\b/i.test(normalized);
+}
+
+function reconcileSemanticFrameWithEvidenceOwnership(
   question: string,
   semanticFrame: BenchmarkSemanticFrame | null | undefined,
   evidenceRows: Array<{ actorName?: string | null; actorType?: string | null }>
 ): BenchmarkSemanticFrame | null | undefined {
   if (!semanticFrame) return semanticFrame;
   const requestedActor = sanitizeActorLabel(inferRequestedQuestionActor(question) ?? "");
-  if (!requestedActor || isOwnerAliasName(requestedActor)) return semanticFrame;
-  const matchedRow = evidenceRows.find((row) => {
-    const actorName = sanitizeActorLabel(String(row.actorName ?? "").trim());
-    return actorName && lowerText(actorName) === lowerText(requestedActor);
-  });
-  if (!matchedRow) return semanticFrame;
-  const role = actorRoleFromEvidenceRow(matchedRow);
-  const nextPreferredVoices: Array<"user_first_person" | "user_about_other" | "assistant_proxy"> = role === "assistant_or_system"
-    ? ["user_about_other", "assistant_proxy"]
-    : role === "user"
-      ? ["user_first_person", "assistant_proxy"]
-      : ["user_about_other", "assistant_proxy"];
-  return normalizeSemanticFrameOwnerAliases({
-    ...semanticFrame,
-    actorScope: requestedActor,
-    statementOwnerName: requestedActor,
-    statementOwnerRole: role,
-    preferredQuestionVoices: nextPreferredVoices,
-    retrievalFacets: {
-      ...semanticFrame.retrievalFacets,
-      actorNames: normalizeFacetValues([requestedActor, ...(semanticFrame.retrievalFacets.actorNames ?? [])], 8)
+  const assistantRow = evidenceRows.find((row) => actorRoleFromEvidenceRow(row) === "assistant_or_system") ?? null;
+  const userRow = evidenceRows.find((row) => actorRoleFromEvidenceRow(row) === "user") ?? null;
+  const assistantName = sanitizeActorLabel(
+    String(assistantRow?.actorName ?? semanticFrame.actorScope ?? semanticFrame.statementOwnerName ?? "The assistant").trim()
+  ) || "The assistant";
+  const ownerName = ownerDisplayName();
+
+  if (requestedActor) {
+    if (isOwnerAliasName(requestedActor)) {
+      return normalizeSemanticFrameOwnerAliases({
+        ...semanticFrame,
+        actorScope: ownerName,
+        statementOwnerName: ownerName,
+        statementOwnerRole: "user",
+        preferredQuestionVoices: ["user_first_person", "assistant_proxy"],
+        retrievalFacets: {
+          ...semanticFrame.retrievalFacets,
+          actorNames: normalizeFacetValues([ownerName, ...(semanticFrame.retrievalFacets.actorNames ?? [])], 8)
+        }
+      });
     }
-  });
+    const matchedRow = evidenceRows.find((row) => {
+      const actorName = sanitizeActorLabel(String(row.actorName ?? "").trim());
+      return actorName && lowerText(actorName) === lowerText(requestedActor);
+    });
+    if (matchedRow) {
+      const role = actorRoleFromEvidenceRow(matchedRow);
+      const nextPreferredVoices: Array<"user_first_person" | "user_about_other" | "assistant_proxy"> = role === "assistant_or_system"
+        ? ["user_about_other", "assistant_proxy"]
+        : role === "user"
+          ? ["user_first_person", "assistant_proxy"]
+          : ["user_about_other", "assistant_proxy"];
+      return normalizeSemanticFrameOwnerAliases({
+        ...semanticFrame,
+        actorScope: requestedActor,
+        statementOwnerName: requestedActor,
+        statementOwnerRole: role,
+        preferredQuestionVoices: nextPreferredVoices,
+        retrievalFacets: {
+          ...semanticFrame.retrievalFacets,
+          actorNames: normalizeFacetValues([requestedActor, ...(semanticFrame.retrievalFacets.actorNames ?? [])], 8)
+        }
+      });
+    }
+  }
+
+  const assistantThreadLike = semanticFrame.topology === "assistant_thread"
+    || /assistant/i.test(String(semanticFrame.actorScope ?? ""))
+    || evidenceRows.some((row) => actorRoleFromEvidenceRow(row) === "assistant_or_system");
+  if (!assistantThreadLike) return normalizeSemanticFrameOwnerAliases(semanticFrame);
+
+  if (questionAsksAboutUserUtterance(question)) {
+    return normalizeSemanticFrameOwnerAliases({
+      ...semanticFrame,
+      actorScope: ownerName,
+      statementOwnerName: ownerName,
+      statementOwnerRole: "user",
+      preferredQuestionVoices: ["user_first_person", "assistant_proxy"],
+      retrievalFacets: {
+        ...semanticFrame.retrievalFacets,
+        actorNames: normalizeFacetValues([ownerName, ...(semanticFrame.retrievalFacets.actorNames ?? [])], 8)
+      }
+    });
+  }
+
+  if (questionAsksForAssistantContent(question) || assistantRow) {
+    return normalizeSemanticFrameOwnerAliases({
+      ...semanticFrame,
+      actorScope: assistantName,
+      statementOwnerName: assistantName,
+      statementOwnerRole: "assistant_or_system",
+      preferredQuestionVoices: ["user_about_other", "assistant_proxy"],
+      retrievalFacets: {
+        ...semanticFrame.retrievalFacets,
+        actorNames: normalizeFacetValues([assistantName, ownerName, ...(semanticFrame.retrievalFacets.actorNames ?? [])], 8)
+      }
+    });
+  }
+
+  if (userRow) {
+    return normalizeSemanticFrameOwnerAliases({
+      ...semanticFrame,
+      actorScope: ownerName,
+      statementOwnerName: ownerName,
+      statementOwnerRole: "user",
+      preferredQuestionVoices: ["user_first_person", "assistant_proxy"],
+      retrievalFacets: {
+        ...semanticFrame.retrievalFacets,
+        actorNames: normalizeFacetValues([ownerName, ...(semanticFrame.retrievalFacets.actorNames ?? [])], 8)
+      }
+    });
+  }
+
+  return normalizeSemanticFrameOwnerAliases(semanticFrame);
+}
+
+function reconcileSemanticFrameWithQuestionActor(
+  question: string,
+  semanticFrame: BenchmarkSemanticFrame | null | undefined,
+  evidenceRows: Array<{ actorName?: string | null; actorType?: string | null }>
+): BenchmarkSemanticFrame | null | undefined {
+  return reconcileSemanticFrameWithEvidenceOwnership(question, semanticFrame, evidenceRows);
 }
 
 function capitalizeSentenceStart(text: string): string {
@@ -8905,18 +9245,22 @@ function ownerDisplayPossessive(): string {
 }
 
 function replaceOwnerAliasesWithYou(text: string): string {
-  let out = String(text ?? "");
+  const segments = String(text ?? "").split(/(\([^)]*\))/g);
   const aliases = Array.from(OWNER_ALIAS_KEYS)
     .map((value) => sanitizeActorLabel(value))
     .filter(Boolean)
     .sort((a, b) => b.length - a.length);
-  for (const alias of aliases) {
-    const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    out = out
-      .replace(new RegExp(`\\b${escaped}'s\\b`, "gi"), "your")
-      .replace(new RegExp(`\\b${escaped}\\b`, "gi"), "you");
-  }
-  return out;
+  return segments.map((segment) => {
+    if (/^\([^)]*\)$/.test(segment)) return segment;
+    let out = segment;
+    for (const alias of aliases) {
+      const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      out = out
+        .replace(new RegExp(`\\b${escaped}'s\\b`, "gi"), "your")
+        .replace(new RegExp(`\\b${escaped}\\b`, "gi"), "you");
+    }
+    return out;
+  }).join("");
 }
 
 function replaceOwnerAliasesWithDisplayName(text: string): string {
@@ -9229,21 +9573,57 @@ function looksGenericExpectedAnswerSummary(summary: string): boolean {
     || normalized.includes("is expected to")
     || normalized.includes("the answer should")
     || normalized.includes("using evidence like")
+    || normalized.includes("here is a quick summary")
+    || normalized.includes("detailed in the evidence")
     || normalized.includes("several free apps")
     || normalized.includes("top-rated state parks")
-    || normalized.includes("should summarize the")
-    || normalized.includes("should state the")
-    || normalized.includes("should explain the");
+      || normalized.includes("should summarize the")
+      || normalized.includes("should state the")
+      || normalized.includes("should explain the");
+}
+
+function stripQuestionLeadForComparison(question: string): string {
+  const normalized = normalizeEvidenceTextForSummary(String(question ?? ""))
+    .replace(/[?]+$/g, "")
+    .trim();
+  return normalized
+    .replace(/^(?:what|which)\s+.+?\s+did\s+.+?\s+(?:say|mention|share|ask|asked|tell|told|explain|explained|state|stated)\s+about\s+/i, "")
+    .replace(/^what did\s+.+?\s+(?:say|mention|share|ask|asked|tell|told|explain|explained|state|stated)\s+about\s+/i, "")
+    .replace(/^what did\s+i\s+ask\s+about\s+/i, "")
+    .replace(/^what did\s+.+?\s+(?:say|mention|share|ask|asked|tell|told|explain|explained|state|stated)\s+/i, "")
+    .trim();
+}
+
+function stripSummaryLeadForComparison(summary: string): string {
+  return normalizeEvidenceTextForSummary(String(summary ?? ""))
+    .replace(/^(?:you|the assistant|[+@\p{L}\p{N}._'\-]+(?:\s+[+@\p{L}\p{N}._'\-]+){0,5})\s+(?:said|asked|mentioned|shared|explained|stated|noted)\s+(?:that\s+)?/iu, "")
+    .trim();
+}
+
+function questionAnswerNearDuplicate(question: string, summary: string): boolean {
+  const questionCore = stripQuestionLeadForComparison(question);
+  const summaryCore = stripSummaryLeadForComparison(summary);
+  if (!questionCore || !summaryCore) return false;
+  const questionTerms = meaningfulTokens(questionCore);
+  const summaryTerms = meaningfulTokens(summaryCore);
+  if (questionTerms.length < 3 || summaryTerms.length < 3) return false;
+  const overlap = conceptOverlapRatio(questionCore, summaryCore);
+  const lengthRatio = Math.min(questionCore.length, summaryCore.length) / Math.max(questionCore.length, summaryCore.length);
+  return overlap >= 0.85 && lengthRatio >= 0.72;
 }
 
 function looksBrokenExpectedAnswerSummary(question: string, summary: string): boolean {
   const normalizedSummary = lowerText(String(summary ?? "").trim());
   if (!normalizedSummary) return true;
   if (/utm_|lang=en[_-]us|@⁨|t"\)|:::+|kxconfid=|src=email|permissionmode|folder structure|project overview/.test(normalizedSummary)) return true;
+  if (/\[\d{1,2}\/\d{1,2}\/\d{2,4},\s*[\d: ]+(?:am|pm)?\]\s*[^:\n]{1,80}:/.test(normalizedSummary)) return true;
   if (/they.m\b|she.m\b|he.m\b/.test(normalizedSummary)) return true;
   if (/\basked whether\b/.test(normalizedSummary) && !/\b(?:ask|asked)\b/i.test(String(question ?? ""))) return true;
   const requestedActor = sanitizeActorLabel(inferRequestedQuestionActor(question) ?? "");
   if (requestedActor && !isOwnerAliasName(requestedActor) && /^you said\b/i.test(String(summary ?? "").trim())) return true;
+  if (questionAsksForAssistantContent(question) && /^you said\b/i.test(String(summary ?? "").trim())) return true;
+  if (questionAsksForAssistantContent(question) && /^the assistant asked whether\b/i.test(String(summary ?? "").trim())) return true;
+  if (questionAsksAboutUserUtterance(question) && /^the assistant said\b/i.test(String(summary ?? "").trim())) return true;
   return false;
 }
 
@@ -9260,6 +9640,13 @@ function inferRequestedQuestionActor(question: string): string | null {
   const direct = String(question ?? "").trim().match(/\bwhat did (.+?)\s+(?:say|mention|suggest|share|provide|consider|plan|planned|discuss|tell|explain|state|ask|asked|express|expressed)\b/i);
   if (direct?.[1]) {
     const actor = compactText(direct[1], 80);
+    if (/^(i|me|myself)$/i.test(actor)) return ownerDisplayName();
+    if (/^(the assistant|assistant)$/i.test(actor)) return "The assistant";
+    return actor.replace(/\b([a-z])/g, (match) => match.toUpperCase());
+  }
+  const objectLead = String(question ?? "").trim().match(/\b(?:what|which)\s+.+?\s+did\s+(.+?)\s+(?:say|mention|suggest|share|provide|consider|plan|planned|discuss|tell|explain|state|ask|asked|express|expressed)\b/i);
+  if (objectLead?.[1]) {
+    const actor = compactText(objectLead[1], 80);
     if (/^(i|me|myself)$/i.test(actor)) return ownerDisplayName();
     if (/^(the assistant|assistant)$/i.test(actor)) return "The assistant";
     return actor.replace(/\b([a-z])/g, (match) => match.toUpperCase());
@@ -9326,6 +9713,37 @@ function evidenceRowMatchesRequestedActor(
   return actorName.toLowerCase() === requestedActor.toLowerCase();
 }
 
+function scoreEvidencePreviewRowForQuestion(
+  question: string,
+  row: { actorName?: string | null; actorType?: string | null; snippet?: string | null; observedAt?: string | null },
+  requestedActor: string | null
+): number {
+  const q = lowerText(normalizeEvidenceTextForSummary(question));
+  const s = lowerText(normalizeEvidenceTextForSummary(String(row.snippet ?? "")));
+  let score = 0;
+  const qTokens = unicodeWordTokens(q).filter((token) => token.length >= 4);
+  for (const token of qTokens) {
+    if (s.includes(token)) score += 2;
+  }
+  if (requestedActor) {
+    const actor = lowerText(row.actorName);
+    if (actor && actor === lowerText(requestedActor)) score += 5;
+  }
+  if (questionAsksForAssistantContent(question)) {
+    if (actorRoleFromEvidenceRow(row) === "assistant_or_system") score += 4;
+    if (looksLikeQuestionClaim(String(row.snippet ?? ""))) score -= 4;
+  }
+  if (questionAsksAboutUserUtterance(question)) {
+    if (actorRoleFromEvidenceRow(row) === "user") score += 4;
+    if (actorRoleFromEvidenceRow(row) === "assistant_or_system") score -= 2;
+  }
+  if (/\b(?:last|latest|most recent)\b/.test(q) && row.observedAt) {
+    const ts = Date.parse(String(row.observedAt));
+    if (Number.isFinite(ts)) score += ts / 1e12;
+  }
+  return score;
+}
+
 function buildEvidenceGroundedAnswerSummary(params: {
   question: string;
   domain: string;
@@ -9340,31 +9758,55 @@ function buildEvidenceGroundedAnswerSummary(params: {
   const requestedActor = inferRequestedQuestionActor(params.question);
   const evidenceRows = Array.isArray(params.evidenceRows) ? params.evidenceRows : [];
   const actorScopedRows = evidenceRows.filter((row) => evidenceRowMatchesRequestedActor(row, requestedActor));
+  const semanticOwnerName = sanitizeActorLabel(String(params.semanticFrame?.statementOwnerName ?? "").trim());
+  const semanticOwnerRole = params.semanticFrame?.statementOwnerRole ?? "mixed";
   const semanticOwnerRow = actorScopedRows.find((row) => {
     const actorName = String(row.actorName ?? "").trim().toLowerCase();
-    const ownerName = String(params.semanticFrame?.statementOwnerName ?? "").trim().toLowerCase();
+    const ownerName = semanticOwnerName.toLowerCase();
     return actorName && ownerName && actorName === ownerName;
   }) ?? null;
   const requestedActorRow = requestedActor
     ? actorScopedRows.find((row) => {
       const actorName = String(row.actorName ?? "").trim();
-      return actorName && actorName.toLowerCase() === requestedActor.toLowerCase();
+        return actorName && actorName.toLowerCase() === requestedActor.toLowerCase();
     }) ?? null
     : null;
-  const summaryOwnerRow = requestedActorRow ?? semanticOwnerRow;
+  const ownerScopedRows = (() => {
+    if (requestedActorRow) {
+      const actorName = lowerText(String(requestedActorRow.actorName ?? "").trim());
+      return actorScopedRows.filter((row) => lowerText(String(row.actorName ?? "").trim()) === actorName);
+    }
+    if (semanticOwnerRow) {
+      const actorName = lowerText(String(semanticOwnerRow.actorName ?? "").trim());
+      return actorScopedRows.filter((row) => lowerText(String(row.actorName ?? "").trim()) === actorName);
+    }
+    if (semanticOwnerRole === "assistant_or_system") {
+      return actorScopedRows.filter((row) => actorRoleFromEvidenceRow(row) === "assistant_or_system");
+    }
+    if (semanticOwnerRole === "user") {
+      return actorScopedRows.filter((row) => actorRoleFromEvidenceRow(row) === "user");
+    }
+    if (semanticOwnerName) {
+      return actorScopedRows.filter((row) => lowerText(String(row.actorName ?? "").trim()) === semanticOwnerName.toLowerCase());
+    }
+    return [];
+  })();
+  const summaryOwnerRow = requestedActorRow ?? semanticOwnerRow ?? ownerScopedRows[0] ?? null;
   const ownerPronouns = readActorPronouns(summaryOwnerRow?.actorMetadata ?? null);
-  const summaryOwnerRole = summaryOwnerRow
+  const resolvedSummaryOwnerRole = summaryOwnerRow
     ? (String(summaryOwnerRow.actorType ?? "").trim().toLowerCase() === "assistant"
       || String(summaryOwnerRow.actorType ?? "").trim().toLowerCase() === "system"
         ? "assistant_or_system"
         : String(summaryOwnerRow.actorType ?? "").trim().toLowerCase() === "user"
           ? "user"
           : "other_human")
-    : (params.semanticFrame?.statementOwnerRole ?? "mixed");
-  const summaryOwnerName = requestedActorRow?.actorName ?? params.semanticFrame?.statementOwnerName ?? null;
+    : semanticOwnerRole;
+  const resolvedSummaryOwnerName = requestedActorRow?.actorName ?? semanticOwnerName ?? null;
   const evidenceTexts = (
-    actorScopedRows.length > 0
-      ? actorScopedRows.map((row) => String(row.snippet ?? "")).filter(Boolean)
+    ownerScopedRows.length > 0
+      ? ownerScopedRows.map((row) => String(row.snippet ?? "")).filter(Boolean)
+      : actorScopedRows.length > 0
+        ? actorScopedRows.map((row) => String(row.snippet ?? "")).filter(Boolean)
       : (Array.isArray(params.evidenceTexts) ? params.evidenceTexts.filter(Boolean) : [])
   );
   const derivedClaims = collectStructuredClaimsFromTexts(evidenceTexts, 6);
@@ -9422,8 +9864,8 @@ function buildEvidenceGroundedAnswerSummary(params: {
     .slice(0, prefersSinglePrimaryClaim(params.question, params.lens) ? 1 : 2)
     .map((entry) => {
       const rewritten = rewriteClaimForSummary(entry.claim, {
-        statementOwnerName: summaryOwnerName,
-        statementOwnerRole: summaryOwnerRole,
+        statementOwnerName: resolvedSummaryOwnerName,
+        statementOwnerRole: resolvedSummaryOwnerRole,
         statementTargetName: params.semanticFrame?.statementTargetName,
         statementOwnerPronouns: ownerPronouns
       });
@@ -9446,16 +9888,16 @@ function buildEvidenceGroundedAnswerSummary(params: {
     }
     const joinedUnits = Array.from(dedupedUnits.values()).slice(0, prefersSinglePrimaryClaim(params.question, params.lens) ? 1 : 2);
     const joined = joinedUnits.map((unit, index) => index === 0 ? unit : capitalizeSentenceStart(unit)).join(" ");
-    return formatSummaryWithSubject(subject, joined);
+    return restoreExplicitMentionReferences(formatSummaryWithSubject(subject, joined), evidenceTexts);
   }
 
-  return buildHumanAnswerSummary({
+  return restoreExplicitMentionReferences(buildHumanAnswerSummary({
     domain: params.domain,
     lens: params.lens,
     expectedBehavior: params.expectedBehavior,
     expectedCoreClaims: claims,
     actorName: params.actorName
-  });
+  }), evidenceTexts);
 }
 
 function buildHumanAnswerSummary(params: {
@@ -16838,27 +17280,32 @@ export async function createJudgeCalibrationSample(params: {
     const expectedBehavior = String((row.metadata ?? {}).expectedBehavior ?? "").trim() === "clarify_first"
       ? "clarify_first"
       : "answer_now";
-    const semanticFrame = readSemanticFrame(row.metadata ?? {});
+    const existingSemanticFrame = readSemanticFrame(row.metadata ?? {});
     const evidencePreview = expectedEvidenceIds
       .map((id) => evidenceMap.get(id))
       .filter(isEvidencePreviewRow)
       .sort((a, b) => String(a.observedAt ?? "").localeCompare(String(b.observedAt ?? "")));
+    const semanticFrame = reconcileSemanticFrameWithQuestionActor(row.question, existingSemanticFrame, evidencePreview) ?? existingSemanticFrame;
+    const storedSummary = String((row.metadata ?? {}).expectedAnswerSummaryHuman ?? "").trim();
+    const fallbackSummary = buildEvidenceGroundedAnswerSummary({
+      question: row.question,
+      domain: row.domain,
+      lens: row.lens,
+      expectedBehavior,
+      expectedCoreClaims,
+      actorName: semanticFrame?.statementOwnerName ?? semanticFrame?.actorScope ?? null,
+      semanticFrame,
+      evidenceTexts: evidencePreview.map((item) => item.snippet),
+      evidenceRows: evidencePreview
+    });
     const expectedAnswer = {
       expectedBehavior,
-      expectedAnswerSummaryHuman: buildEvidenceGroundedAnswerSummary({
-        question: row.question,
-        domain: row.domain,
-        lens: row.lens,
-        expectedBehavior,
-        expectedCoreClaims,
-        actorName: semanticFrame?.statementOwnerName ?? semanticFrame?.actorScope ?? null,
-        semanticFrame,
-        evidenceTexts: evidencePreview.map((item) => item.snippet),
-        evidenceRows: evidencePreview
-      }),
+      expectedAnswerSummaryHuman: (!storedSummary || looksGenericExpectedAnswerSummary(storedSummary) || looksBrokenExpectedAnswerSummary(row.question, storedSummary))
+        ? fallbackSummary
+        : storedSummary,
       qualityGate: readCaseQualityGate(row.metadata ?? {}),
       ambiguityClass: ambiguityClass || (expectedBehavior === "clarify_first" ? "clarify_required" : "clear"),
-      semanticFrameSummary: readSemanticFrameSummary(row.metadata ?? {}),
+      semanticFrameSummary: summarizeSemanticFrame(semanticFrame),
       clarificationQuestion: readClarificationQuestion(row.metadata ?? {}),
       resolvedQuestionAfterClarification: readResolvedQuestionAfterClarification(row.metadata ?? {}),
       admissionDecision: readAdmissionDecision(row.metadata ?? {}),
@@ -17008,20 +17455,25 @@ export async function listJudgeCalibrationPending(params: {
       const caseEvidenceIds = Array.isArray(r.case_evidence_ids)
         ? r.case_evidence_ids.map(String)
         : parsePgTextArray(String(r.case_evidence_ids ?? "{}"));
+      const requestedActor = inferRequestedQuestionActor(r.question);
       const evidencePreview = caseEvidenceIds
         .map((id) => evidenceMap.get(id))
         .filter(isEvidencePreviewRow)
         .sort((a, b) => {
+          const scoreDelta = scoreEvidencePreviewRowForQuestion(r.question, b, requestedActor)
+            - scoreEvidencePreviewRowForQuestion(r.question, a, requestedActor);
+          if (scoreDelta !== 0) return scoreDelta;
           const left = String(a.observedAt ?? "");
           const right = String(b.observedAt ?? "");
           if (!left && !right) return 0;
           if (!left) return 1;
           if (!right) return -1;
-          return left.localeCompare(right);
+          return right.localeCompare(left);
         })
-        .slice(0, 4);
+        .slice(0, 6);
       const metadata = r.metadata ?? {};
-      const semanticFrame = readSemanticFrame(metadata);
+      const existingSemanticFrame = readSemanticFrame(metadata);
+      const semanticFrame = reconcileSemanticFrameWithQuestionActor(r.question, existingSemanticFrame, evidencePreview) ?? existingSemanticFrame;
       const expectedBehavior = String(metadata.expectedBehavior ?? "").trim() === "clarify_first"
         ? "clarify_first"
         : "answer_now";
@@ -17056,7 +17508,7 @@ export async function listJudgeCalibrationPending(params: {
         question: r.question,
         expectedBehavior,
         semanticFrame,
-        semanticFrameSummary: readSemanticFrameSummary(metadata),
+        semanticFrameSummary: summarizeSemanticFrame(semanticFrame),
         clarificationQuestion: readClarificationQuestion(metadata),
         resolvedQuestionAfterClarification: readResolvedQuestionAfterClarification(metadata),
         expectedAnswerSummaryHuman,
@@ -17075,11 +17527,14 @@ export async function listJudgeCalibrationPending(params: {
         expectedEvidenceIds: caseEvidenceIds,
         queueScore: scorePendingCalibrationQueueCandidate({
           question: r.question,
+          lens: r.lens,
           ambiguityClass: r.ambiguity_class,
           assistantSuggestion,
           qualityGate,
           critique: authoringCritique,
-          expectedAnswerSummaryHuman
+          expectedAnswerSummaryHuman,
+          evidencePreview,
+          semanticFrame
         })
       };
     });
@@ -17146,13 +17601,42 @@ function questionLooksMalformedForCalibration(question: string): boolean {
   return false;
 }
 
+function questionLooksLowValueForCalibration(params: {
+  question: string;
+  lens: string;
+  expectedAnswerSummaryHuman: string;
+  evidencePreview: EvidencePreviewRow[];
+  semanticFrame: BenchmarkSemanticFrame | null;
+  }): boolean {
+    const question = String(params.question ?? "").trim();
+    const lens = String(params.lens ?? "").trim().toLowerCase();
+    if (lens !== "descriptive") return false;
+    if (questionAnswerNearDuplicate(question, params.expectedAnswerSummaryHuman)) return true;
+    if (!/^(what did .+ say about|what .+ did .+ mention)\b/i.test(question)) return false;
+    if (/\b(?:why|how|when|where|who else|which|compare|difference|feel|plan|decide|decided|suggest|recommended|recommend|explain)\b/i.test(question)) return false;
+  const topEvidence = params.evidencePreview[0]?.snippet ?? "";
+  const normalizedEvidence = normalizeEvidenceTextForSummary(topEvidence);
+  const evidenceTokens = unicodeWordTokens(normalizedEvidence);
+  const normalizedSummary = normalizeEvidenceTextForSummary(String(params.expectedAnswerSummaryHuman ?? ""));
+  const summaryTokens = unicodeWordTokens(normalizedSummary);
+  const summaryOverlap = summaryTokens.filter((token) => evidenceTokens.includes(token)).length;
+  const richSupport = String(params.semanticFrame?.supportDepth ?? "").trim().toLowerCase() === "rich";
+  if (!richSupport) return false;
+  if (evidenceTokens.length > 8 && normalizedEvidence.length > 56) return false;
+  if (summaryOverlap < Math.max(2, Math.min(4, evidenceTokens.length))) return false;
+  return true;
+}
+
 function scorePendingCalibrationQueueCandidate(params: {
   question: string;
+  lens: string;
   ambiguityClass: string | null;
   assistantSuggestion: Record<string, unknown> | null;
   qualityGate: ReturnType<typeof readCaseQualityGate>;
   critique: ReturnType<typeof readAuthoringCritique>;
   expectedAnswerSummaryHuman: string;
+  evidencePreview: EvidencePreviewRow[];
+  semanticFrame: BenchmarkSemanticFrame | null;
 }): number {
   let score = 0;
   const question = String(params.question ?? "").trim();
@@ -17174,6 +17658,7 @@ function scorePendingCalibrationQueueCandidate(params: {
   if (looksGenericExpectedAnswerSummary(params.expectedAnswerSummaryHuman)) score -= 18;
   if (looksBrokenExpectedAnswerSummary(question, params.expectedAnswerSummaryHuman)) score -= 160;
   if (questionLooksMalformedForCalibration(question)) score -= 140;
+  if (questionLooksLowValueForCalibration(params)) score -= 180;
   if (/wrong actor|wrong pronoun|wrong pov|wrong thread|wrong time|summary wrong|too generic|nonsense question|malformed|wrong answer|not grounded|wrong domain/i.test(assistantNotes)) {
     score -= 60;
   }
@@ -17277,7 +17762,7 @@ function sanitizeAssistantCalibrationReview(
 } {
   const verdict = String(review.verdict ?? "").trim().toLowerCase() === "no" ? "no" : "yes";
   const ambiguityRaw = String(review.ambiguityClass ?? "").trim().toLowerCase();
-  const ambiguityClass =
+  let ambiguityClass: "clear" | "clarify_required" | "unresolved" =
     ambiguityRaw === "clarify_required" || ambiguityRaw === "unresolved"
       ? ambiguityRaw
       : "clear";
@@ -17359,11 +17844,46 @@ function sanitizeAssistantCalibrationReview(
       notes,
       modelValue: String(review.missingSlotType ?? item.missingSlotType ?? "").trim()
     });
+    const deterministicClarifyFallback = /^deterministic clarify fallback/i.test(
+      String(item.chosenQuestionRationale ?? item.clarifyAugmentationRationale ?? "").trim()
+    );
+    const clarifyValid = clarifyCaseNeedsFollowUp({
+      question,
+      clarificationQuestion,
+      resolvedQuestionAfterClarification: String(item.resolvedQuestionAfterClarification ?? "").trim(),
+      notes,
+      modelValue: slotType,
+      evidenceTexts: Array.isArray(item.evidencePreview)
+        ? item.evidencePreview.map((entry) => String((entry as Record<string, unknown>)?.snippet ?? "").trim()).filter(Boolean)
+        : []
+    });
+    if (deterministicClarifyFallback && slotType !== "actor") {
+      if (ambiguityClass === "clarify_required") ambiguityClass = "clear";
+      if (verdict === "yes") {
+        return {
+          verdict,
+          ambiguityClass: "clear",
+          notes: "Question is specific enough to answer directly; non-actor clarify cases now require model-backed support.",
+          confidence: Math.max(confidence, 0.8)
+        };
+      }
+    }
+    if (!clarifyValid) {
+      if (ambiguityClass === "clarify_required") ambiguityClass = "clear";
+      if (verdict === "yes") {
+        return {
+          verdict,
+          ambiguityClass: "clear",
+          notes: "Question is specific enough to answer directly; no follow-up should be required.",
+          confidence: Math.max(confidence, 0.78)
+        };
+      }
+    }
     const negativeClarifyCue = /too specific|unrealistic|not realistic|wrong missing slot|wrong follow[- ]?up|should ask about|follow up needs|does not resolve|not sufficient|system will not know/i.test(notes);
     const positiveClarifyCue =
       ambiguityClass === "clarify_required"
       && /needs? to specify|should specify|does not specify|missing|lacks grounding in a specific|needs clarification|which .* are you referring|clarify/i.test(notes);
-    if (verdict === "no" && positiveClarifyCue && !negativeClarifyCue) {
+    if (verdict === "no" && positiveClarifyCue && !negativeClarifyCue && clarifyValid) {
       const label =
         slotType === "actor" ? "actor"
         : slotType === "timeframe" ? "timeframe"
@@ -17380,7 +17900,7 @@ function sanitizeAssistantCalibrationReview(
         confidence
       };
     }
-    if (verdict === "yes" && ambiguityClass === "clear") {
+    if (verdict === "yes" && ambiguityClass === "clear" && clarifyValid) {
       return {
         verdict,
         ambiguityClass: "clarify_required",
@@ -17556,6 +18076,169 @@ async function reviewCalibrationBatchWithModel(items: Array<Record<string, unkno
   }
 }
 
+type AnswerSummaryRewriteItem = {
+  id: string;
+  question: string;
+  expectedBehavior: "answer_now" | "clarify_first";
+  domain: string;
+  lens: string;
+  semanticFrame: BenchmarkSemanticFrame | null | undefined;
+  clarificationQuestion?: string | null;
+  resolvedQuestionAfterClarification?: string | null;
+  fallbackSummary: string;
+  evidencePreview: EvidencePreviewRow[];
+};
+
+async function rewriteExpectedAnswerSummaryBatchWithModel(
+  items: AnswerSummaryRewriteItem[]
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const openAiKey = String(config.openAiApiKey ?? "").trim();
+  const normalizedItems = items.filter((item) => item && item.id && item.question && item.evidencePreview.length > 0);
+  if (!openAiKey || normalizedItems.length <= 0) return out;
+  const url = `${String(config.openAiBaseUrl || "https://api.openai.com/v1").replace(/\/+$/, "")}/chat/completions`;
+  const apiKey = openAiKey;
+  const model = String(config.metadataModel || "gpt-4o-mini").replace(/^openai\//i, "");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 45000);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.1,
+        max_tokens: 2200,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are AnswerSummaryRepairAgent for OpenBrain. Rewrite expected benchmark answers so they are natural, complete, and strictly evidence-grounded. " +
+              "Return JSON only with key summaries, an array. Each item must include id and summary. " +
+              "The summary must say what a correct answer should actually say, not comment on the evidence. " +
+              "Use the evidence to do the heavy lifting: include the substantive updates, facts, or conclusions rather than vague phrases like 'the evidence details it' or 'here is a quick summary'. " +
+              "Keep actor attribution exact. If the question asks what the assistant said, summarize the assistant's content, not the user's question. If the question asks what a person said, attribute the statement to that person. " +
+              "Preserve important referenced people from explicit @mentions when they matter. " +
+              "If the evidence contains multiple concrete updates, summarize the meaningful updates, not the intro line that announces a summary. " +
+              "Do not merely restate the question. Do not say 'the answer should'. Do not say 'the evidence shows'. " +
+              "Write 1 to 3 concise sentences, max 420 characters. " +
+              "For clarify_first cases, summarize what the final grounded answer would say after the clarification is supplied, not the clarification instruction itself."
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              items: normalizedItems.map((item) => ({
+                id: item.id,
+                question: item.question,
+                expectedBehavior: item.expectedBehavior,
+                clarificationQuestion: item.clarificationQuestion ?? null,
+                resolvedQuestionAfterClarification: item.resolvedQuestionAfterClarification ?? null,
+                semanticFrame: item.semanticFrame ? {
+                  actorScope: item.semanticFrame.actorScope,
+                  statementOwnerName: item.semanticFrame.statementOwnerName,
+                  statementOwnerRole: item.semanticFrame.statementOwnerRole,
+                  statementTargetName: item.semanticFrame.statementTargetName,
+                  participants: item.semanticFrame.participants,
+                  sourceConversationLabel: item.semanticFrame.sourceConversationLabel,
+                  topicSummary: item.semanticFrame.topicSummary,
+                  timeframe: item.semanticFrame.timeframe
+                } : null,
+                fallbackSummary: item.fallbackSummary,
+                evidence: item.evidencePreview.slice(0, 6).map((row) => ({
+                  actorName: row.actorName,
+                  actorType: row.actorType,
+                  observedAt: row.observedAt,
+                  snippet: compactText(String(row.snippet ?? ""), 500)
+                }))
+              }))
+            })
+          }
+        ]
+      })
+    });
+    if (!response.ok) return out;
+    const payload = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const raw = String(payload?.choices?.[0]?.message?.content ?? "").trim();
+    const parsed = parseJsonObjectLike(raw);
+    const summaries = Array.isArray(parsed?.summaries) ? parsed.summaries : [];
+    const sourceById = new Map(normalizedItems.map((item) => [item.id, item]));
+    for (const item of summaries) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const obj = item as Record<string, unknown>;
+      const id = String(obj.id ?? "").trim();
+      const source = sourceById.get(id);
+      if (!source) continue;
+      const summary = compactText(String(obj.summary ?? "").trim(), 420);
+      if (!summary) continue;
+      if (looksGenericExpectedAnswerSummary(summary)) continue;
+      if (looksBrokenExpectedAnswerSummary(source.question, summary)) continue;
+      if (questionAnswerNearDuplicate(source.question, summary)) continue;
+      out.set(id, restoreExplicitMentionReferences(summary, source.evidencePreview.map((row) => row.snippet)));
+    }
+  } catch {
+    return out;
+  } finally {
+    clearTimeout(timeout);
+  }
+  return out;
+}
+
+async function rewriteExpectedAnswerSummaryWithModel(
+  item: AnswerSummaryRewriteItem
+): Promise<string | null> {
+  const rewritten = await rewriteExpectedAnswerSummaryBatchWithModel([item]);
+  return rewritten.get(item.id) ?? null;
+}
+
+function shouldRewriteExpectedAnswerSummaryWithModel(params: {
+  question: string;
+  summary: string;
+  expectedBehavior: "answer_now" | "clarify_first";
+  evidencePreview: EvidencePreviewRow[];
+}): boolean {
+  const question = String(params.question ?? "").trim();
+  const summary = String(params.summary ?? "").trim();
+  const evidencePreview = Array.isArray(params.evidencePreview) ? params.evidencePreview : [];
+  if (evidencePreview.length <= 0) return false;
+  if (!summary) return true;
+  if (looksGenericExpectedAnswerSummary(summary)) return true;
+  if (looksBrokenExpectedAnswerSummary(question, summary)) return true;
+  if (questionAnswerNearDuplicate(question, summary)) return true;
+  const substantiveRows = evidencePreview.filter((row) => {
+    const snippet = normalizeEvidenceTextForSummary(String(row.snippet ?? ""));
+    return snippet.length >= 90 && !looksLikeQuestionClaim(snippet);
+  });
+  if (substantiveRows.length >= 2) return true;
+  const loweredQuestion = lowerText(question);
+  if (
+    /\b(?:updates?|details?|summary|status|plan|next steps?|risks?|options?|recommendations?|what did .+ (?:say|provide|share|mention|outline|explain|tell) (?:about|regarding))\b/.test(loweredQuestion)
+    && substantiveRows.length >= 1
+  ) {
+    return true;
+  }
+  return false;
+}
+
+async function rewriteExpectedAnswerSummaryChunks(
+  items: AnswerSummaryRewriteItem[],
+  batchSize = 4
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (let index = 0; index < items.length; index += batchSize) {
+    const chunk = items.slice(index, index + batchSize);
+    const chunkMap = await rewriteExpectedAnswerSummaryBatchWithModel(chunk);
+    for (const [id, summary] of chunkMap.entries()) {
+      out.set(id, summary);
+    }
+  }
+  return out;
+}
+
 async function generatePositiveVariantBatchWithModel(items: Array<Record<string, unknown>>): Promise<Array<Record<string, unknown>>> {
   const openAiKey = String(config.openAiApiKey ?? "").trim();
   if (!openAiKey) {
@@ -17647,7 +18330,9 @@ async function generateClarifyVariantBatchWithModel(items: Array<Record<string, 
               "Stay in the owner's or owner's-agent point of view. Do not invent names, dates, or facts not supported by the source evidence. " +
               "Do not emit benchmark-y wording, raw ids, or file paths. " +
               "Produce at most 1 strong clarify variant per source item and skip items that cannot support a trustworthy clarify case. " +
-              "Diversify the batch. Do not repeat the same ambiguity archetype across multiple source items when another missing slot type is available."
+              "Diversify the batch. Prefer a mix of ambiguity types when the evidence supports it: actor omission, referent omission like it/that, thread-or-group omission like there/that chat, and app-or-platform omission when it materially changes retrieval. " +
+              "Avoid defaulting the whole batch to actor omission or repetitive stems like 'What details did someone...' when another grounded ambiguity archetype is available. " +
+              "Good clarify shapes: 'What did I do about it?' -> 'What are you referring to?'; 'What did I say there?' -> 'Which chat do you mean?'; 'What did someone say about the birthday dinner?' -> 'Which person do you mean?'."
           },
           {
             role: "user",
@@ -17689,71 +18374,159 @@ function generateClarifyVariantFallbacks(
   items: Array<Record<string, unknown>>,
   seenSourceIds: Set<string>
 ): Array<Record<string, unknown>> {
+  const timeLikeText = (value: string): boolean => /\b(today|tomorrow|yesterday|tonight|morning|afternoon|evening|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|last|next|this|year|month|week|quarter|\d{4}|\d{1,2}[/-]\d{1,2})\b/i.test(value);
   const out: Array<Record<string, unknown>> = [];
   for (const item of items) {
     const sourceCaseId = String(item.sourceCaseId ?? "").trim();
     if (!sourceCaseId || seenSourceIds.has(sourceCaseId)) continue;
     const sourceQuestion = compactText(String(item.sourceQuestion ?? "").trim(), 220);
     if (!sourceQuestion || !sourceQuestion.endsWith("?")) continue;
+    const evidenceTexts = Array.isArray(item.evidencePreview)
+      ? item.evidencePreview.map((entry) => String((entry as { snippet?: string | null } | null)?.snippet ?? "").trim()).filter(Boolean)
+      : [];
+    const candidates: Array<{
+      question: string;
+      clarificationQuestion: string;
+      slotType: "actor" | "timeframe" | "app_or_platform" | "location" | "thread_identity" | "target_scope";
+      rationale: string;
+    }> = [];
+    const pushCandidate = (
+      slotType: "actor" | "timeframe" | "app_or_platform" | "location" | "thread_identity" | "target_scope",
+      questionVariants: string[],
+      clarificationVariants: string[],
+      rationale: string
+    ): void => {
+      const question = pickClarifySurface(`${sourceCaseId}|${slotType}|question`, questionVariants);
+      const clarificationQuestion = pickClarifySurface(`${sourceCaseId}|${slotType}|clarify`, clarificationVariants);
+      if (!question || !clarificationQuestion) return;
+      candidates.push({ question, clarificationQuestion, slotType, rationale });
+    };
+
+    const topicMatch = sourceQuestion.match(/^(what(?:\s+\w+){0,8}\s+.+?\b(?:about|regarding|on|for)\s+)(.+?)\?$/i);
+    if (topicMatch && !timeLikeText(topicMatch[2])) {
+      const lowerLead = lowerText(topicMatch[1]);
+      const topicReplacementVariants =
+        /\bon\s+$/.test(lowerLead) || /\bfor\s+$/.test(lowerLead)
+          ? ["that", "it"]
+          : /\bregarding\s+$/.test(lowerLead)
+            ? ["that", "this"]
+            : ["it", "that", "this"];
+      pushCandidate(
+        "target_scope",
+        topicReplacementVariants.map((replacement) => `${topicMatch[1]}${replacement}?`),
+        [
+          "What are you referring to?",
+          "Which issue do you mean?",
+          "What exactly are you asking about?"
+        ],
+        "Deterministic clarify fallback from grounded topic omission in the source question."
+      );
+    }
+
+    const containerMatch = sourceQuestion.match(/^(what(?:\s+\w+){0,8}\s+.+?)(\s+(?:in|inside|within|from|on)\s+)(?:the\s+)?(.+?)\?$/i);
+    if (containerMatch) {
+      const containerText = String(containerMatch[3] ?? "").trim();
+      const lowerContainer = lowerText(containerText);
+      if (/\b(whatsapp|telegram|chatgpt|grok|openclaw|slack|discord)\b/.test(lowerContainer)) {
+        pushCandidate(
+          "app_or_platform",
+          [
+            `${containerMatch[1]}${containerMatch[2]}there?`,
+            `${containerMatch[1]}${containerMatch[2]}that app?`
+          ],
+          [
+            "Which app do you mean?",
+            "Which platform do you mean?"
+          ],
+          "Deterministic clarify fallback from grounded app or platform omission in the source question."
+        );
+      } else if (/\b(group|chat|thread|conversation|channel)\b/.test(lowerContainer)) {
+        pushCandidate(
+          "thread_identity",
+          [
+            `${containerMatch[1]}${containerMatch[2]}there?`,
+            `${containerMatch[1]}${containerMatch[2]}that chat?`,
+            `${containerMatch[1]}${containerMatch[2]}that group?`
+          ],
+          [
+            "Which chat do you mean?",
+            "Which group do you mean?",
+            "Which conversation do you mean?"
+          ],
+          "Deterministic clarify fallback from grounded chat or group omission in the source question."
+        );
+      }
+    }
+
     const patterns: Array<{
       regex: RegExp;
-      slotType: "actor" | "timeframe" | "app_or_platform" | "location" | "thread_identity" | "target_scope";
-      clarificationQuestion: string;
-      rewrite: (question: string, regex: RegExp) => string;
+      slotType: "actor";
+      clarificationQuestion: string[];
+      rewriteVariants: (question: string, regex: RegExp) => string[];
     }> = [
+      {
+        regex: /^(what(?:\s+\w+){0,5}\s+did)\s+(.+?)\s+((?:say|ask|mention|provide|provided|share|shared|tell|told|explain|explained|update|updated|suggest|suggested|recommend|recommended|think|thought)\b.*\?)$/i,
+        slotType: "actor",
+        clarificationQuestion: [
+          "Which person do you mean?",
+          "Who do you mean?",
+          "Which person are you asking about?"
+        ],
+        rewriteVariants: (question, regex) => ([
+          question.replace(regex, "$1 someone $3"),
+          question.replace(regex, "$1 somebody $3"),
+          question.replace(regex, "$1 one person $3")
+        ]).map((value) => value.replace(/\s+/g, " ").trim())
+      },
       {
         regex: /\s+with\s+(.+?)\?$/i,
         slotType: "actor",
-        clarificationQuestion: "Which person do you mean?",
-        rewrite: (question, regex) => question.replace(regex, "?").replace(/\s+\?/g, "?").trim()
-      },
-      {
-        regex: /\s+using\s+(.+?)\?$/i,
-        slotType: "app_or_platform",
-        clarificationQuestion: "Which app or service do you mean?",
-        rewrite: (question, regex) => question.replace(regex, "?").replace(/\s+\?/g, "?").trim()
-      },
-      {
-        regex: /\s+near\s+(.+?)\?$/i,
-        slotType: "location",
-        clarificationQuestion: "Which location do you mean?",
-        rewrite: (question, regex) => question.replace(regex, "?").replace(/\s+\?/g, "?").trim()
-      },
-      {
-        regex: /\s+about\s+(.+?)\s+and\s+(.+?)\?$/i,
-        slotType: "target_scope",
-        clarificationQuestion: "Which detail do you mean?",
-        rewrite: (question, regex) => question.replace(regex, " about $1?").replace(/\s+\?/g, "?").trim()
-      },
-      {
-        regex: /\s+(?:in|on)\s+(.+?)\?$/i,
-        slotType: "app_or_platform",
-        clarificationQuestion: "Which app or platform do you mean?",
-        rewrite: (question, regex) => question.replace(regex, "?").replace(/\s+\?/g, "?").trim()
-      },
-      {
-        regex: /\s+(?:about|regarding|for)\s+(.+?)\?$/i,
-        slotType: "target_scope",
-        clarificationQuestion: "What specific topic do you mean?",
-        rewrite: (question, regex) => question.replace(regex, "?").replace(/\s+\?/g, "?").trim()
+        clarificationQuestion: [
+          "Which person do you mean?",
+          "Who do you mean?"
+        ],
+        rewriteVariants: (question, regex) => ([
+          question.replace(regex, "?").replace(/\s+\?/g, "?").trim(),
+          question.replace(regex, " with someone?").replace(/\s+/g, " ").trim()
+        ])
       }
     ];
     for (const pattern of patterns) {
       const match = sourceQuestion.match(pattern.regex);
       if (!match) continue;
-      const variantQuestion = pattern.rewrite(sourceQuestion, pattern.regex);
-      if (!variantQuestion || variantQuestion === sourceQuestion || variantQuestion.length < 16) continue;
-      out.push({
-        sourceCaseId,
-        question: variantQuestion,
-        clarificationQuestion: pattern.clarificationQuestion,
-        resolvedQuestionAfterClarification: sourceQuestion,
-        missingSlotType: pattern.slotType,
-        rationale: "Deterministic clarify fallback from the grounded source question."
-      });
-      seenSourceIds.add(sourceCaseId);
+      pushCandidate(
+        pattern.slotType,
+        pattern.rewriteVariants(sourceQuestion, pattern.regex),
+        pattern.clarificationQuestion,
+        "Deterministic clarify fallback from grounded actor omission in the source question."
+      );
       break;
     }
+
+    const validCandidates = candidates.filter((candidate) => (
+      candidate.question
+      && candidate.question !== sourceQuestion
+      && candidate.question.length >= 16
+      && clarifyCaseNeedsFollowUp({
+        question: candidate.question,
+        clarificationQuestion: candidate.clarificationQuestion,
+        resolvedQuestionAfterClarification: sourceQuestion,
+        modelValue: candidate.slotType,
+        evidenceTexts
+      })
+    ));
+    if (validCandidates.length === 0) continue;
+    const chosen = validCandidates[stableClarifyVariantIndex(`${sourceCaseId}|clarify-slot`, validCandidates.length)];
+    if (!chosen) continue;
+    out.push({
+      sourceCaseId,
+      question: chosen.question,
+      clarificationQuestion: chosen.clarificationQuestion,
+      resolvedQuestionAfterClarification: sourceQuestion,
+      missingSlotType: chosen.slotType,
+      rationale: chosen.rationale
+    });
+    seenSourceIds.add(sourceCaseId);
   }
   return out;
 }
@@ -17849,7 +18622,12 @@ export async function autoReviewJudgeCalibration(params: {
 export async function refreshExperimentExpectedAnswerSummaries(params: {
   experimentId: string;
   pendingOnly?: boolean;
+  includeStale?: boolean;
+  caseIds?: string[];
 }): Promise<Record<string, unknown>> {
+  const filteredCaseIds = Array.isArray(params.caseIds)
+    ? params.caseIds.map((value) => String(value ?? "").trim()).filter(Boolean)
+    : [];
   const rows = await pool.query<{
     case_id: string;
     question: string;
@@ -17880,9 +18658,10 @@ export async function refreshExperimentExpectedAnswerSummaries(params: {
        c.owner_validation_state
      FROM experiment_cases c
      WHERE c.experiment_id = $1::uuid
-       AND c.is_stale = false
+       AND ($3::boolean = true OR c.is_stale = false)
+       AND ($4::uuid[] IS NULL OR c.id = ANY($4::uuid[]))
        AND ($2::boolean = false OR c.owner_validation_state = 'pending')`,
-    [params.experimentId, params.pendingOnly === true]
+    [params.experimentId, params.pendingOnly === true, params.includeStale === true, filteredCaseIds.length > 0 ? filteredCaseIds : null]
   );
   const allEvidenceIds = rows.rows.flatMap((row) => (
     Array.isArray(row.evidence_ids)
@@ -17890,12 +18669,12 @@ export async function refreshExperimentExpectedAnswerSummaries(params: {
       : parsePgTextArray(String(row.evidence_ids ?? "{}"))
   ));
   const evidenceMap = await loadEvidencePreviewMap(allEvidenceIds);
-  let updatedCases = 0;
-  let updatedItems = 0;
-  for (const row of rows.rows) {
+  const preparedRows = rows.rows.map((row) => {
     const metadata = row.metadata ?? {};
     const existingSemanticFrame = readSemanticFrame(metadata);
     const questionVoiceRaw = String(metadata.questionVoice ?? "unknown").trim();
+    const storedClarificationQuestion = readClarificationQuestion(metadata);
+    const storedResolvedQuestionAfterClarification = readResolvedQuestionAfterClarification(metadata);
     const expectedEvidenceIds = Array.isArray(row.evidence_ids)
       ? row.evidence_ids.map(String)
       : parsePgTextArray(String(row.evidence_ids ?? "{}"));
@@ -17911,13 +18690,34 @@ export async function refreshExperimentExpectedAnswerSummaries(params: {
       semanticFrame
     );
     const normalizedQuestion = normalizeAssistantHistoricalQuestion(row.question, semanticFrame, normalizedQuestionVoice);
-    const expectedBehavior = String(metadata.expectedBehavior ?? "").trim() === "clarify_first"
+    const expectedBehaviorStored: "answer_now" | "clarify_first" = String(metadata.expectedBehavior ?? "").trim() === "clarify_first"
       ? "clarify_first"
       : "answer_now";
+    const storedSlotType = classifyClarifyMissingSlotType({
+      question: normalizedQuestion,
+      clarificationQuestion: storedClarificationQuestion,
+      notes: String(metadata.chosenQuestionRationale ?? metadata.clarifyAugmentationRationale ?? "").trim(),
+      modelValue: String(metadata.missingSlotType ?? "").trim()
+    });
+    const deterministicClarifyFallback = /^deterministic clarify fallback/i.test(
+      String(metadata.chosenQuestionRationale ?? metadata.clarifyAugmentationRationale ?? "").trim()
+    );
+    const clarifyStillNeeded = expectedBehaviorStored === "clarify_first"
+      && !(deterministicClarifyFallback && storedSlotType !== "actor")
+      && clarifyCaseNeedsFollowUp({
+      question: normalizedQuestion,
+      clarificationQuestion: storedClarificationQuestion,
+      resolvedQuestionAfterClarification: storedResolvedQuestionAfterClarification,
+      modelValue: String(metadata.missingSlotType ?? "").trim(),
+      evidenceTexts: evidencePreview.map((item) => String(item.snippet ?? "").trim()).filter(Boolean)
+    });
+    const expectedBehavior: "answer_now" | "clarify_first" = clarifyStillNeeded ? "clarify_first" : "answer_now";
+    const clarificationQuestion = expectedBehavior === "clarify_first" ? storedClarificationQuestion : null;
+    const resolvedQuestionAfterClarification = expectedBehavior === "clarify_first" ? storedResolvedQuestionAfterClarification : null;
     const expectedCoreClaims = Array.isArray(row.expected_core_claims)
       ? row.expected_core_claims.map(String)
       : parseJsonArray(String(row.expected_core_claims ?? "[]"));
-    const summary = buildEvidenceGroundedAnswerSummary({
+    const fallbackSummary = buildEvidenceGroundedAnswerSummary({
       question: normalizedQuestion,
       domain: row.domain,
       lens: row.lens,
@@ -17928,38 +18728,97 @@ export async function refreshExperimentExpectedAnswerSummaries(params: {
       evidenceTexts: evidencePreview.map((item) => item.snippet),
       evidenceRows: evidencePreview
     });
-    if (!summary) continue;
     const storedSummary = String(metadata.expectedAnswerSummaryHuman ?? "").trim();
+    const baselineSummary = (!storedSummary || looksGenericExpectedAnswerSummary(storedSummary) || looksBrokenExpectedAnswerSummary(row.question, storedSummary))
+      ? fallbackSummary
+      : storedSummary;
+    return {
+      row,
+      metadata,
+      semanticFrame,
+      normalizedQuestionVoice,
+      normalizedQuestion,
+      expectedBehavior,
+      clarificationQuestion,
+      resolvedQuestionAfterClarification,
+      evidencePreview,
+      storedSummary,
+      baselineSummary,
+      clarifyNormalizedToClear: expectedBehaviorStored === "clarify_first" && expectedBehavior !== "clarify_first"
+    };
+  });
+  const rewriteMap = await rewriteExpectedAnswerSummaryChunks(
+    preparedRows
+      .filter((prepared) => Boolean(prepared.baselineSummary) && shouldRewriteExpectedAnswerSummaryWithModel({
+        question: prepared.normalizedQuestion,
+        summary: prepared.baselineSummary,
+        expectedBehavior: prepared.expectedBehavior,
+        evidencePreview: prepared.evidencePreview
+      }))
+      .map((prepared) => ({
+        id: prepared.row.case_id,
+        question: prepared.normalizedQuestion,
+        expectedBehavior: prepared.expectedBehavior,
+        domain: prepared.row.domain,
+        lens: prepared.row.lens,
+        semanticFrame: prepared.semanticFrame,
+        clarificationQuestion: prepared.clarificationQuestion,
+        resolvedQuestionAfterClarification: prepared.resolvedQuestionAfterClarification,
+        fallbackSummary: prepared.baselineSummary,
+        evidencePreview: prepared.evidencePreview
+      }))
+  );
+  let updatedCases = 0;
+  let updatedItems = 0;
+  let normalizedClarifyToClear = 0;
+  for (const prepared of preparedRows) {
+    const { row, metadata, semanticFrame, normalizedQuestionVoice, normalizedQuestion } = prepared;
+    const summary = rewriteMap.get(row.case_id) ?? prepared.baselineSummary;
+    if (!summary) continue;
+    const storedSummary = prepared.storedSummary;
     const questionChanged = normalizedQuestion !== row.question;
     const summaryChanged = storedSummary !== summary;
+    const expectedBehaviorChanged = String(metadata.expectedBehavior ?? "").trim() !== prepared.expectedBehavior;
+    const clarificationChanged = readClarificationQuestion(metadata) !== (prepared.clarificationQuestion ?? null);
+    const resolvedQuestionChanged = readResolvedQuestionAfterClarification(metadata) !== (prepared.resolvedQuestionAfterClarification ?? null);
     const refreshedSemanticFrameSummary = summarizeSemanticFrame(semanticFrame);
     const metadataSemanticFrame = (metadata.semanticFrame && typeof metadata.semanticFrame === "object" && !Array.isArray(metadata.semanticFrame))
       ? (metadata.semanticFrame as Record<string, unknown>)
       : null;
     const semanticFrameChanged = JSON.stringify(metadataSemanticFrame ?? null) !== JSON.stringify(semanticFrame ?? null);
     const questionVoiceChanged = String(metadata.questionVoice ?? "unknown") !== normalizedQuestionVoice;
-    if (!questionChanged && !summaryChanged && !semanticFrameChanged && !questionVoiceChanged) continue;
+    if (!questionChanged && !summaryChanged && !semanticFrameChanged && !questionVoiceChanged && !expectedBehaviorChanged && !clarificationChanged && !resolvedQuestionChanged) continue;
     const updatedMetadata = {
       ...metadata,
       semanticFrame,
       questionVoice: normalizedQuestionVoice,
+      expectedBehavior: prepared.expectedBehavior,
+      clarificationQuestion: prepared.clarificationQuestion,
+      resolvedQuestionAfterClarification: prepared.resolvedQuestionAfterClarification,
+      clarificationQualityExpected: prepared.expectedBehavior === "clarify_first",
       expectedAnswerSummaryHuman: summary,
       semanticFrameSummary: refreshedSemanticFrameSummary
     };
     await pool.query(
       `UPDATE experiment_cases
           SET question = $2,
-              metadata = $3::jsonb,
+              ambiguity_class = $3,
+              metadata = $4::jsonb,
               updated_at = now()
         WHERE id = $1::uuid`,
-      [row.case_id, normalizedQuestion, JSON.stringify(updatedMetadata)]
+      [row.case_id, normalizedQuestion, prepared.expectedBehavior === "clarify_first" ? "clarify_required" : "clear", JSON.stringify(updatedMetadata)]
     );
     updatedCases += 1;
+    if (prepared.clarifyNormalizedToClear) normalizedClarifyToClear += 1;
     const existingExpectedAnswer = (row.expected_answer && typeof row.expected_answer === "object" && !Array.isArray(row.expected_answer))
       ? row.expected_answer
       : {};
     const refreshedExpectedAnswer = {
       ...existingExpectedAnswer,
+      expectedBehavior: prepared.expectedBehavior,
+      ambiguityClass: prepared.expectedBehavior === "clarify_first" ? "clarify_required" : "clear",
+      clarificationQuestion: prepared.clarificationQuestion,
+      resolvedQuestionAfterClarification: prepared.resolvedQuestionAfterClarification,
       expectedAnswerSummaryHuman: summary,
       semanticFrameSummary: refreshedSemanticFrameSummary,
       feasibilityReport: (existingExpectedAnswer.feasibilityReport && typeof existingExpectedAnswer.feasibilityReport === "object" && !Array.isArray(existingExpectedAnswer.feasibilityReport))
@@ -17983,8 +18842,11 @@ export async function refreshExperimentExpectedAnswerSummaries(params: {
     ok: true,
     experimentId: params.experimentId,
     pendingOnly: params.pendingOnly === true,
+    includeStale: params.includeStale === true,
+    caseIds: filteredCaseIds.length,
     updatedCases,
-    updatedCalibrationItems: updatedItems
+    updatedCalibrationItems: updatedItems,
+    normalizedClarifyToClear
   };
 }
 
@@ -18111,7 +18973,14 @@ async function retagActiveBenchmarkCasesSecondPass(params: {
       contextRows,
       supported
     });
-    const currentSemanticFrame = readSemanticFrame(metadata);
+    const currentSemanticFrame = reconcileSemanticFrameWithQuestionActor(
+      row.question,
+      readSemanticFrame(metadata),
+      evidenceRows.map((item) => ({
+        actorName: item.actor_name,
+        actorType: item.actor_type
+      }))
+    ) ?? readSemanticFrame(metadata);
     const questionVoiceRaw = String(metadata.questionVoice ?? "unknown").trim();
     const normalizedQuestionVoice = normalizeQuestionVoiceForFrame(
       questionVoiceRaw === "user_first_person" || questionVoiceRaw === "user_about_other" || questionVoiceRaw === "assistant_proxy"
@@ -18126,12 +18995,14 @@ async function retagActiveBenchmarkCasesSecondPass(params: {
     const evidencePreviewRows = contextRows.map((item) => ({
       evidenceId: item.canonical_id,
       actorName: item.actor_name,
+      actorType: item.actor_type,
+      actorMetadata: item.metadata ?? null,
       observedAt: item.source_timestamp,
       sourceSystem: item.source_system,
       snippet: item.content
     }));
     const storedSummary = String(metadata.expectedAnswerSummaryHuman ?? "").trim();
-    const currentSummary = (!storedSummary || looksGenericExpectedAnswerSummary(storedSummary))
+    let currentSummary = (!storedSummary || looksGenericExpectedAnswerSummary(storedSummary) || looksBrokenExpectedAnswerSummary(row.question, storedSummary))
       ? (buildEvidenceGroundedAnswerSummary({
         question: row.question,
         domain: row.domain,
@@ -18144,8 +19015,39 @@ async function retagActiveBenchmarkCasesSecondPass(params: {
         evidenceRows: evidencePreviewRows
       }) || storedSummary)
       : storedSummary;
+    if (currentSummary && shouldRewriteExpectedAnswerSummaryWithModel({
+      question: row.question,
+      summary: currentSummary,
+      expectedBehavior,
+      evidencePreview: evidencePreviewRows
+    })) {
+      const rewrittenSummary = await rewriteExpectedAnswerSummaryWithModel({
+        id: `${row.case_id}:current`,
+        question: row.question,
+        expectedBehavior,
+        domain: row.domain,
+        lens: row.lens,
+        semanticFrame: currentSemanticFrame,
+        clarificationQuestion: readClarificationQuestion(metadata),
+        resolvedQuestionAfterClarification: readResolvedQuestionAfterClarification(metadata),
+        fallbackSummary: currentSummary,
+        evidencePreview: evidencePreviewRows
+      });
+      if (rewrittenSummary) currentSummary = rewrittenSummary;
+    }
 
-    const semanticFrameForDraft = currentSemanticFrame ?? buildWholeCorpusAuthoringSemanticFrame({
+    const semanticFrameForDraft = reconcileSemanticFrameWithQuestionActor(
+      row.question,
+      currentSemanticFrame ?? buildWholeCorpusAuthoringSemanticFrame({
+        lens: row.lens,
+        window: relativeWindowPhrase(anchor.source_timestamp),
+        contextRows,
+        anchor,
+        actorName,
+        familyReasoningModes
+      }),
+      evidencePreviewRows
+    ) ?? buildWholeCorpusAuthoringSemanticFrame({
       lens: row.lens,
       window: relativeWindowPhrase(anchor.source_timestamp),
       contextRows,
@@ -18209,7 +19111,7 @@ async function retagActiveBenchmarkCasesSecondPass(params: {
 
     const refreshedQuestionVoice = normalizeQuestionVoiceForFrame(normalizedQuestionVoice, assigned.semanticFrame);
     const refreshedQuestion = normalizeAssistantHistoricalQuestion(row.question, assigned.semanticFrame, refreshedQuestionVoice);
-    const refreshedSummary = buildEvidenceGroundedAnswerSummary({
+    let refreshedSummary = buildEvidenceGroundedAnswerSummary({
       question: refreshedQuestion,
       domain: assigned.domain,
       lens: assigned.lens,
@@ -18220,6 +19122,26 @@ async function retagActiveBenchmarkCasesSecondPass(params: {
       evidenceTexts: evidencePreviewRows.map((item) => item.snippet),
       evidenceRows: evidencePreviewRows
     }) || currentSummary;
+    if (refreshedSummary && shouldRewriteExpectedAnswerSummaryWithModel({
+      question: refreshedQuestion,
+      summary: refreshedSummary,
+      expectedBehavior,
+      evidencePreview: evidencePreviewRows
+    })) {
+      const rewrittenSummary = await rewriteExpectedAnswerSummaryWithModel({
+        id: `${row.case_id}:refreshed`,
+        question: refreshedQuestion,
+        expectedBehavior,
+        domain: assigned.domain,
+        lens: assigned.lens,
+        semanticFrame: assigned.semanticFrame,
+        clarificationQuestion: readClarificationQuestion(metadata),
+        resolvedQuestionAfterClarification: readResolvedQuestionAfterClarification(metadata),
+        fallbackSummary: refreshedSummary,
+        evidencePreview: evidencePreviewRows
+      });
+      if (rewrittenSummary) refreshedSummary = rewrittenSummary;
+    }
     const refreshedFeasibility = readFeasibilityReport(metadata) ?? {
       version: BENCHMARK_ORACLE_VERSION,
       verifiedQuestion: refreshedQuestion,
@@ -18696,13 +19618,16 @@ function conceptOverlapRatio(left: string, right: string): number {
 }
 
 function shouldAdmitClarifyFromApprovedSeed(params: {
+  question: string;
   sourceQuestion: string;
   clarifyQuestion: string;
   resolvedQuestionAfterClarification: string;
+  missingSlotType?: string | null;
   critique: BenchmarkAuthoringCritique;
   hardGuardReasons: string[];
   minCritiqueScore: number;
   rationale?: string;
+  evidenceTexts?: string[] | null;
 }): boolean {
   const disqualifyingHardGuards = new Set([
     "low_signal_anchor",
@@ -18715,15 +19640,33 @@ function shouldAdmitClarifyFromApprovedSeed(params: {
   const clarifyQuestion = String(params.clarifyQuestion ?? "").trim();
   const resolvedQuestion = String(params.resolvedQuestionAfterClarification ?? "").trim();
   if (!clarifyQuestion || !resolvedQuestion) return false;
+  const missingSlotType = classifyClarifyMissingSlotType({
+    question: params.question,
+    clarificationQuestion: clarifyQuestion,
+    notes: params.rationale ?? null,
+    modelValue: String(params.missingSlotType ?? "").trim()
+  });
+  if (!clarifyCaseNeedsFollowUp({
+    question: params.question,
+    clarificationQuestion: clarifyQuestion,
+    resolvedQuestionAfterClarification: resolvedQuestion,
+    notes: params.rationale ?? null,
+    modelValue: missingSlotType,
+    evidenceTexts: params.evidenceTexts ?? null
+  })) return false;
   const sourceToResolvedOverlap = conceptOverlapRatio(params.sourceQuestion, resolvedQuestion);
   const sourceToClarifyOverlap = conceptOverlapRatio(params.sourceQuestion, params.clarifyQuestion);
   const deterministicFallback = /^deterministic clarify fallback/i.test(String(params.rationale ?? "").trim());
+  if (deterministicFallback && missingSlotType !== "actor") return false;
   const relaxedCritiqueFloor = deterministicFallback
     ? Math.max(0.6, params.minCritiqueScore - 0.18)
     : Math.max(0.68, params.minCritiqueScore - 0.12);
+  const clarifyQuestionOverlapOk = missingSlotType === "actor"
+    ? /\b(who|which person|which people|whose)\b/i.test(clarifyQuestion)
+    : sourceToClarifyOverlap >= 0.12;
   return params.critique.score >= relaxedCritiqueFloor
     && sourceToResolvedOverlap >= (deterministicFallback ? 0.35 : 0.4)
-    && sourceToClarifyOverlap >= 0.12;
+    && clarifyQuestionOverlapOk;
 }
 
 function classifyClarifyMissingSlotType(params: {
@@ -18751,6 +19694,148 @@ function classifyClarifyMissingSlotType(params: {
   if (/\blocation\b|\bcity\b|\bstreet\b|\bwhere\b|\bnear\b|\bwhich route\b|\bwhich address\b|\bwhich place\b/.test(text)) return "location";
   if (/\bconversation\b|\bthread\b|\bchat\b|\bmessage\b|\bgroup\b|\bchannel\b/.test(text)) return "thread_identity";
   return "target_scope";
+}
+
+const CLARIFY_PLACEHOLDER_ACTORS = new Set([
+  "he", "she", "they", "him", "her", "them", "someone", "somebody", "person", "people", "one", "ones"
+]);
+
+const CLARIFY_GENERIC_TOPIC_TOKENS = new Set([
+  "someone", "somebody", "thing", "things", "stuff", "detail", "details", "topic", "topics",
+  "issue", "issues", "problem", "problems", "person", "people"
+]);
+
+const CLARIFY_GENERIC_ACTION_TOKENS = new Set([
+  "ask", "asked", "asking", "say", "said", "saying", "tell", "told", "telling",
+  "mention", "mentioned", "mentioning", "provide", "provided", "providing",
+  "share", "shared", "sharing", "explain", "explained", "explaining",
+  "update", "updated", "updating", "suggest", "suggested", "suggesting",
+  "recommend", "recommended", "recommending", "think", "thought", "thinking",
+  "learn", "learned", "learning", "know", "knew", "knowing", "do", "did", "doing", "done",
+  "about", "regarding", "regard", "for", "with", "from", "into", "onto", "through",
+  "tell", "tells", "said", "says", "me", "my", "mine", "you", "your", "yours",
+  "i", "we", "our", "ours", "it", "its", "this", "that", "these", "those"
+]);
+
+function isPlaceholderRequestedActor(actor: string | null | undefined): boolean {
+  return CLARIFY_PLACEHOLDER_ACTORS.has(lowerText(String(actor ?? "").trim()));
+}
+
+function clarifyAnchorTokens(question: string): string[] {
+  const core = stripQuestionLeadForComparison(question) || normalizeEvidenceTextForSummary(question);
+  return meaningfulTokens(core).filter((token) => !CLARIFY_GENERIC_TOPIC_TOKENS.has(token));
+}
+
+function clarifyActorTokenSet(actor: string | null | undefined): Set<string> {
+  return new Set(meaningfulTokens(String(actor ?? "")));
+}
+
+function clarifyTopicalTokens(question: string, actor: string | null | undefined): string[] {
+  const actorTokens = clarifyActorTokenSet(actor);
+  return clarifyAnchorTokens(question).filter((token) => (
+    !actorTokens.has(token)
+    && !CLARIFY_GENERIC_ACTION_TOKENS.has(token)
+  ));
+}
+
+function extractClarifyScopePhrase(question: string): string | null {
+  const match = String(question ?? "").trim().match(/\b(?:about|regarding|for|on)\s+(.+?)\?$/i);
+  return match ? compactText(match[1], 160) || null : null;
+}
+
+function normalizeClarifyGroundingText(text: string): string {
+  return normalizeEvidenceTextForSummary(text).replace(/\s+/g, " ").trim();
+}
+
+function stableClarifyVariantIndex(key: string, choices: number): number {
+  if (choices <= 1) return 0;
+  let hash = 0;
+  for (const char of String(key ?? "")) {
+    hash = ((hash * 31) + char.charCodeAt(0)) >>> 0;
+  }
+  return hash % choices;
+}
+
+function pickClarifySurface(key: string, variants: string[]): string {
+  const cleaned = variants.map((value) => compactText(value.replace(/\s+/g, " ").trim(), 220)).filter(Boolean) as string[];
+  if (cleaned.length === 0) return "";
+  return cleaned[stableClarifyVariantIndex(key, cleaned.length)] ?? cleaned[0] ?? "";
+}
+
+const CLARIFY_GENERIC_CONTEXT_TOKENS = new Set([
+  "app", "platform", "system", "group", "chat", "thread", "conversation", "channel",
+  "whatsapp", "telegram", "chatgpt", "grok", "openclaw", "there", "here"
+]);
+
+function clarifyScopePhraseLooksGrounded(scopePhrase: string | null, evidenceTexts: string[]): boolean {
+  if (!scopePhrase) return false;
+  const normalizedPhrase = normalizeClarifyGroundingText(scopePhrase);
+  if (!normalizedPhrase) return false;
+  const haystack = normalizeClarifyGroundingText(evidenceTexts.join(" "));
+  if (!haystack) return true;
+  if (haystack.includes(normalizedPhrase)) return true;
+  const tokens = meaningfulTokens(scopePhrase).filter((token) => (
+    !CLARIFY_GENERIC_TOPIC_TOKENS.has(token)
+    && !CLARIFY_GENERIC_ACTION_TOKENS.has(token)
+  ));
+  if (tokens.length === 0) return false;
+  const matchedTokens = tokens.filter((token) => haystack.includes(token));
+  if (tokens.length === 1) return matchedTokens.length === 1;
+  if (tokens.length === 2) return matchedTokens.length === 2;
+  if (matchedTokens.length >= 2) return true;
+  for (let index = 0; index < tokens.length - 1; index += 1) {
+    const bigram = `${tokens[index]} ${tokens[index + 1]}`;
+    if (haystack.includes(bigram)) return true;
+  }
+  return false;
+}
+
+export function clarifyCaseNeedsFollowUp(params: {
+  question?: string | null;
+  clarificationQuestion?: string | null;
+  resolvedQuestionAfterClarification?: string | null;
+  notes?: string | null;
+  modelValue?: string | null;
+  evidenceTexts?: string[] | null;
+}): boolean {
+  const question = String(params.question ?? "").trim();
+  const clarificationQuestion = String(params.clarificationQuestion ?? "").trim();
+  const resolvedQuestion = String(params.resolvedQuestionAfterClarification ?? "").trim();
+  if (!question || !clarificationQuestion || !resolvedQuestion) return false;
+  if (normalizeQuestionSignature(question) === normalizeQuestionSignature(resolvedQuestion)) return false;
+  const slotType = classifyClarifyMissingSlotType({
+    question,
+    clarificationQuestion,
+    notes: params.notes,
+    modelValue: params.modelValue
+  });
+  const requestedActor = sanitizeActorLabel(inferRequestedQuestionActor(question) ?? "");
+  const resolvedActor = sanitizeActorLabel(inferRequestedQuestionActor(resolvedQuestion) ?? "");
+  const hasSpecificActor = Boolean(requestedActor) && !isPlaceholderRequestedActor(requestedActor);
+  const hasActorPlaceholder = Boolean(requestedActor) && isPlaceholderRequestedActor(requestedActor);
+  const sourceAnchors = clarifyAnchorTokens(question);
+  const sourceAnchorSet = new Set(sourceAnchors);
+  const resolvedAnchors = clarifyAnchorTokens(resolvedQuestion);
+  const addedAnchors = resolvedAnchors.filter((token) => !sourceAnchorSet.has(token));
+  const sourceTopicalAnchors = clarifyTopicalTokens(question, requestedActor);
+  const effectiveSourceTopicalAnchors = sourceTopicalAnchors.filter((token) => !CLARIFY_GENERIC_CONTEXT_TOKENS.has(token));
+  const sourceTopicalAnchorSet = new Set(sourceTopicalAnchors);
+  const resolvedTopicalAnchors = clarifyTopicalTokens(resolvedQuestion, resolvedActor || requestedActor);
+  const addedTopicalAnchors = resolvedTopicalAnchors.filter((token) => !sourceTopicalAnchorSet.has(token));
+  const strongSearchAnchors = effectiveSourceTopicalAnchors.length >= 1;
+  const addsSpecificActor = Boolean(resolvedActor) && !isPlaceholderRequestedActor(resolvedActor) && !hasSpecificActor;
+  const addsAnchor = addsSpecificActor || addedTopicalAnchors.length >= 1 || addedAnchors.length >= 1;
+  if (!addsAnchor) return false;
+  const evidenceTexts = Array.isArray(params.evidenceTexts)
+    ? params.evidenceTexts.map((value) => String(value ?? "").trim()).filter(Boolean)
+    : [];
+  if (slotType === "actor") {
+    if (hasSpecificActor) return false;
+    return strongSearchAnchors && (hasActorPlaceholder || !requestedActor);
+  }
+  if (effectiveSourceTopicalAnchors.length >= 1) return false;
+  if (!clarifyScopePhraseLooksGrounded(extractClarifyScopePhrase(resolvedQuestion), evidenceTexts)) return false;
+  return true;
 }
 
 function buildClarifyArchetypeKey(params: {
@@ -22310,10 +23395,15 @@ export async function backfillCalibrationClarifyCases(params: {
      WHERE c.experiment_id = $1::uuid
        AND c.is_stale = false
        AND c.ambiguity_class = 'clear'
-       AND c.owner_validation_state IN ('approved', 'not_required')
+       AND COALESCE(c.owner_validation_state, 'pending') <> 'rejected'
        AND COALESCE((c.metadata->'admissionDecision'->>'admitted')::boolean, false) = true
        AND COALESCE(c.metadata->'qualityGate'->>'status', 'fail') = 'pass'
      ORDER BY
+       CASE COALESCE(c.owner_validation_state, 'pending')
+         WHEN 'approved' THEN 0
+         WHEN 'not_required' THEN 1
+         ELSE 2
+       END ASC,
        CASE c.case_set
          WHEN 'critical' THEN 0
          WHEN 'certification' THEN 1
@@ -22373,6 +23463,7 @@ export async function backfillCalibrationClarifyCases(params: {
       expectedCoreClaims: expectedCoreClaims.slice(0, 3)
     };
   });
+  const seedPayloadById = new Map(seedPayloads.map((item) => [item.sourceCaseId, item]));
 
   const candidateVariants: Array<{
     sourceCaseId: string;
@@ -22385,85 +23476,95 @@ export async function backfillCalibrationClarifyCases(params: {
   const variantKeys = new Set<string>();
   const variantSourceSlotKeys = new Set<string>();
   const variantArchetypeKeys = new Set<string>();
-  for (let i = 0; i < seedPayloads.length && candidateVariants.length < remainingRequested * 3; i += 4) {
-    const batch = seedPayloads.slice(i, i + 4);
-    const variants = await generateClarifyVariantBatchWithModel(batch);
-    for (const variant of variants) {
-      const sourceCaseId = String(variant.sourceCaseId ?? "").trim();
-      const question = String(variant.question ?? "").trim();
-      const clarificationQuestion = String(variant.clarificationQuestion ?? "").trim();
-      const resolvedQuestionAfterClarification = String(variant.resolvedQuestionAfterClarification ?? "").trim();
-      if (!sourceCaseId || !question || !clarificationQuestion || !resolvedQuestionAfterClarification) continue;
-      const seed = seedById.get(sourceCaseId);
-      if (!seed) continue;
-      if (normalizeQuestionSignature(question) === normalizeQuestionSignature(String(seed.question ?? ""))) continue;
-      if (normalizeQuestionSignature(question) === normalizeQuestionSignature(resolvedQuestionAfterClarification)) continue;
-      const missingSlotType = classifyClarifyMissingSlotType({
-        question,
-        clarificationQuestion,
-        notes: String(variant.rationale ?? "").trim(),
-        modelValue: String(variant.missingSlotType ?? "").trim()
-      });
-      const questionKey = buildBenchmarkQuestionDedupKey(question);
-      const sourceSlotKey = `${sourceCaseId}|${missingSlotType}`;
-      const archetypeKey = buildClarifyArchetypeKey({
-        question,
-        clarificationQuestion,
-        slotType: missingSlotType
-      });
-      if (existingQuestionKeys.has(questionKey) || variantKeys.has(questionKey)) continue;
-      if (existingClarifySourceSlotKeys.has(sourceSlotKey) || variantSourceSlotKeys.has(sourceSlotKey)) continue;
-      if (existingClarifyArchetypeKeys.has(archetypeKey) || variantArchetypeKeys.has(archetypeKey)) continue;
-      variantKeys.add(questionKey);
-      variantSourceSlotKeys.add(sourceSlotKey);
-      variantArchetypeKeys.add(archetypeKey);
-      candidateVariants.push({
-        sourceCaseId,
-        question,
-        clarificationQuestion,
-        resolvedQuestionAfterClarification,
-        missingSlotType,
-        rationale: String(variant.rationale ?? "").trim()
-      });
-      if (candidateVariants.length >= remainingRequested * 3) break;
-    }
+  const tryAddClarifyVariant = (variant: {
+    sourceCaseId?: string;
+    question?: string;
+    clarificationQuestion?: string;
+    resolvedQuestionAfterClarification?: string;
+    missingSlotType?: string;
+    rationale?: string;
+  }): boolean => {
+    const sourceCaseId = String(variant.sourceCaseId ?? "").trim();
+    const question = String(variant.question ?? "").trim();
+    const clarificationQuestion = String(variant.clarificationQuestion ?? "").trim();
+    const resolvedQuestionAfterClarification = String(variant.resolvedQuestionAfterClarification ?? "").trim();
+    if (!sourceCaseId || !question || !clarificationQuestion || !resolvedQuestionAfterClarification) return false;
+    const seed = seedById.get(sourceCaseId);
+    const seedPayload = seedPayloadById.get(sourceCaseId);
+    if (!seed) return false;
+    if (normalizeQuestionSignature(question) === normalizeQuestionSignature(String(seed.question ?? ""))) return false;
+    if (normalizeQuestionSignature(question) === normalizeQuestionSignature(resolvedQuestionAfterClarification)) return false;
+    const missingSlotType = classifyClarifyMissingSlotType({
+      question,
+      clarificationQuestion,
+      notes: String(variant.rationale ?? "").trim(),
+      modelValue: String(variant.missingSlotType ?? "").trim()
+    });
+    if (!clarifyCaseNeedsFollowUp({
+      question,
+      clarificationQuestion,
+      resolvedQuestionAfterClarification,
+      notes: String(variant.rationale ?? "").trim(),
+      modelValue: missingSlotType,
+      evidenceTexts: Array.isArray(seedPayload?.evidencePreview)
+        ? seedPayload.evidencePreview.map((item) => String(item?.snippet ?? "").trim()).filter(Boolean)
+        : []
+    })) return false;
+    const questionKey = buildBenchmarkQuestionDedupKey(question);
+    const sourceSlotKey = `${sourceCaseId}|${missingSlotType}`;
+    const archetypeKey = buildClarifyArchetypeKey({
+      question,
+      clarificationQuestion,
+      slotType: missingSlotType
+    });
+    if (existingQuestionKeys.has(questionKey) || variantKeys.has(questionKey)) return false;
+    if (existingClarifySourceSlotKeys.has(sourceSlotKey) || variantSourceSlotKeys.has(sourceSlotKey)) return false;
+    if (existingClarifyArchetypeKeys.has(archetypeKey) || variantArchetypeKeys.has(archetypeKey)) return false;
+    variantKeys.add(questionKey);
+    variantSourceSlotKeys.add(sourceSlotKey);
+    variantArchetypeKeys.add(archetypeKey);
+    candidateVariants.push({
+      sourceCaseId,
+      question,
+      clarificationQuestion,
+      resolvedQuestionAfterClarification,
+      missingSlotType,
+      rationale: String(variant.rationale ?? "").trim()
+    });
+    return true;
+  };
+
+  for (const fallback of generateClarifyVariantFallbacks(seedPayloads, new Set<string>())) {
+    if (candidateVariants.length >= remainingRequested) break;
+    tryAddClarifyVariant(fallback);
   }
-  if (candidateVariants.length <= 0) {
-    const fallbackVariants = generateClarifyVariantFallbacks(seedPayloads, new Set<string>());
-    for (const variant of fallbackVariants) {
-      const sourceCaseId = String(variant.sourceCaseId ?? "").trim();
-      const question = String(variant.question ?? "").trim();
-      const clarificationQuestion = String(variant.clarificationQuestion ?? "").trim();
-      const resolvedQuestionAfterClarification = String(variant.resolvedQuestionAfterClarification ?? "").trim();
-      if (!sourceCaseId || !question || !clarificationQuestion || !resolvedQuestionAfterClarification) continue;
-      const missingSlotType = classifyClarifyMissingSlotType({
-        question,
-        clarificationQuestion,
-        notes: String(variant.rationale ?? "").trim(),
-        modelValue: String(variant.missingSlotType ?? "").trim()
-      });
-      const questionKey = buildBenchmarkQuestionDedupKey(question);
-      const sourceSlotKey = `${sourceCaseId}|${missingSlotType}`;
-      const archetypeKey = buildClarifyArchetypeKey({
-        question,
-        clarificationQuestion,
-        slotType: missingSlotType
-      });
-      if (existingQuestionKeys.has(questionKey) || variantKeys.has(questionKey)) continue;
-      if (existingClarifySourceSlotKeys.has(sourceSlotKey) || variantSourceSlotKeys.has(sourceSlotKey)) continue;
-      if (existingClarifyArchetypeKeys.has(archetypeKey) || variantArchetypeKeys.has(archetypeKey)) continue;
-      variantKeys.add(questionKey);
-      variantSourceSlotKeys.add(sourceSlotKey);
-      variantArchetypeKeys.add(archetypeKey);
-      candidateVariants.push({
-        sourceCaseId,
-        question,
-        clarificationQuestion,
-        resolvedQuestionAfterClarification,
-        missingSlotType,
-        rationale: String(variant.rationale ?? "").trim()
-      });
-      if (candidateVariants.length >= remainingRequested * 3) break;
+
+  for (let i = 0; i < seedPayloads.length && candidateVariants.length < remainingRequested; i += 4) {
+    const batch = seedPayloads.slice(i, i + 4);
+    let variants: Array<{
+      sourceCaseId: string;
+      question: string;
+      clarificationQuestion: string;
+      resolvedQuestionAfterClarification: string;
+      missingSlotType: string;
+      rationale: string;
+    }> = [];
+    try {
+      variants = await generateClarifyVariantBatchWithModel(batch) as Array<{
+        sourceCaseId: string;
+        question: string;
+        clarificationQuestion: string;
+        resolvedQuestionAfterClarification: string;
+        missingSlotType: string;
+        rationale: string;
+      }>;
+    } catch {
+      variants = [];
+    }
+    for (const variant of variants) {
+      if (tryAddClarifyVariant(variant) && candidateVariants.length >= remainingRequested) {
+        break;
+      }
     }
   }
 
@@ -22554,13 +23655,16 @@ export async function backfillCalibrationClarifyCases(params: {
       modelReasons: []
     });
     const clarifySeedFallbackAdmit = shouldAdmitClarifyFromApprovedSeed({
+      question: variant.question,
       sourceQuestion: String(seed.question ?? ""),
       clarifyQuestion: variant.clarificationQuestion,
       resolvedQuestionAfterClarification: variant.resolvedQuestionAfterClarification,
+      missingSlotType: variant.missingSlotType,
       critique,
       hardGuardReasons,
       minCritiqueScore,
-      rationale: variant.rationale
+      rationale: variant.rationale,
+      evidenceTexts: contextRows.map((row) => String(row.content ?? "").trim()).filter(Boolean)
     });
     if ((!admissionDecision.admitted && !clarifySeedFallbackAdmit) || critique.score < Math.max(0.72, minCritiqueScore - 0.08)) continue;
     const expectedCoreClaims = Array.isArray(seed.expected_core_claims)
@@ -22641,12 +23745,24 @@ export async function backfillCalibrationClarifyCases(params: {
   if (admittedPool.length === 0 && candidateVariants.length > 0) {
     for (const variant of candidateVariants) {
       if (admittedPool.length >= remainingRequested) break;
+      if (variant.missingSlotType !== "actor") continue;
       const seed = seedById.get(variant.sourceCaseId);
       if (!seed) continue;
       const evidenceIds = Array.isArray(seed.evidence_ids)
         ? seed.evidence_ids.map(String)
         : parsePgTextArray(String(seed.evidence_ids ?? "{}"));
       if (evidenceIds.length === 0) continue;
+      const evidenceTexts = evidenceIds
+        .map((id) => evidencePreviewMap.get(id))
+        .map((row) => String(row?.snippet ?? "").trim())
+        .filter(Boolean);
+      if (!clarifyCaseNeedsFollowUp({
+        question: variant.question,
+        clarificationQuestion: variant.clarificationQuestion,
+        resolvedQuestionAfterClarification: variant.resolvedQuestionAfterClarification,
+        modelValue: variant.missingSlotType,
+        evidenceTexts
+      })) continue;
       const conversationIds = Array.isArray(seed.conversation_ids)
         ? seed.conversation_ids.map(String)
         : parsePgTextArray(String(seed.conversation_ids ?? "{}"));
@@ -22856,6 +23972,25 @@ export async function backfillCalibrationClarifyCases(params: {
     });
   }
 
+  const insertedTotal = Number(clarifyReactivated.selected ?? 0) + insertedCaseIds.length;
+  const calibrationItemsCreatedTotal = Number(clarifyReactivated.calibrationItemsCreated ?? 0) + calibrationMap.size;
+  let wholeCorpusFallback: Record<string, unknown> | null = null;
+  if (insertedTotal < requested) {
+    const remainingSnapshot = await experimentActivePoolGapSnapshot({
+      experimentId: params.experimentId
+    });
+    const remainingClarifyGap = Math.max(0, Number(remainingSnapshot.gap.clarifyGap ?? 0));
+    if (remainingClarifyGap > 0) {
+      // When clarify-specific augmentation cannot fully close the gap, allow
+      // whole-corpus mining to contribute only gap-reducing clarify cases.
+      wholeCorpusFallback = await backfillPositiveCalibrationCases({
+        experimentId: params.experimentId,
+        targetCount: Math.min(remainingClarifyGap, requested - insertedTotal),
+        minCritiqueScore: Math.max(minCritiqueScore, 0.88)
+      });
+    }
+  }
+
   return {
     ok: true,
     experimentId: params.experimentId,
@@ -22865,13 +24000,15 @@ export async function backfillCalibrationClarifyCases(params: {
     admittedVariants: admittedPool.length,
     assistantSuggestedYes,
     assistantSuggestedNo,
-    inserted: Number(clarifyReactivated.selected ?? 0) + insertedCaseIds.length,
-    calibrationItemsCreated: Number(clarifyReactivated.calibrationItemsCreated ?? 0) + calibrationMap.size,
+    inserted: insertedTotal + Number(wholeCorpusFallback?.inserted ?? 0),
+    calibrationItemsCreated: calibrationItemsCreatedTotal + Number(wholeCorpusFallback?.calibrationItemsCreated ?? 0),
     caseIds: [
       ...(Array.isArray(clarifyReactivated.caseIds) ? clarifyReactivated.caseIds : []),
-      ...insertedCaseIds
+      ...insertedCaseIds,
+      ...(Array.isArray(wholeCorpusFallback?.caseIds) ? wholeCorpusFallback.caseIds as string[] : [])
     ],
-    reactivated: clarifyReactivated
+    reactivated: clarifyReactivated,
+    wholeCorpusFallback
   };
 }
 
